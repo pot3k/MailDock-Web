@@ -54,7 +54,17 @@
     .row .actions button:hover { border-color: var(--accent); color: var(--accent); }
     #empty { padding: 48px 28px; color: var(--muted); font-size: 14px; }
 
-    #list #gear { margin-top: auto; background: transparent; font-size: 20px; font-weight: 400; }
+    /* App launcher: sits above the gear and opens upward. The rail scrolls if the window is too short for it. */
+    #list { overflow-y: auto; scrollbar-width: none; }
+    #list > * { flex: none; }
+    #apps { margin-top: auto; display: flex; flex-direction: column; align-items: center; gap: 8px; }
+    #list #apps button { display: flex; align-items: center; justify-content: center; background: transparent; }
+    #list #apps button:hover, #list #appsToggle.open { background: rgba(255, 255, 255, 0.2); }
+    #list #apps .app { width: 38px; height: 38px; border-radius: 10px; background: rgba(255, 255, 255, 0.08); color: rgba(255, 255, 255, 0.9); }
+    #list #apps .app:hover { color: var(--amber); }
+    #list #apps svg { display: block; pointer-events: none; }
+    #list button:focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
+    #list #gear { background: transparent; font-size: 20px; font-weight: 400; }
     #list #gear:hover, #list #gear.active { background: rgba(255, 255, 255, 0.2); }
     #settings { position: fixed; left: 68px; top: 0; right: 0; bottom: 0; display: none; flex-direction: column; background: var(--panel); color: var(--text); -webkit-app-region: no-drag; }
     body.settings-open #settings { display: flex; }
@@ -73,6 +83,21 @@
     .setting .desc { margin-top: 2px; font-size: 13px; color: var(--muted); }
     .setting .action { flex: none; min-width: 84px; padding: 7px 14px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); color: var(--text); font: inherit; font-size: 13px; cursor: pointer; }
     .setting .action:hover { border-color: var(--accent); color: var(--accent); }
+    .setting .action:disabled { opacity: 0.45; cursor: default; border-color: var(--line); color: var(--text); }
+    .setting .action.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+    .setting.account { gap: 10px; }
+    .setting.account .text { margin-left: 4px; }
+    .setting.account .name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .setting .avatar { flex: none; width: 34px; height: 34px; border-radius: 9px; background: var(--rail); color: #fff; font-weight: 600; font-size: 14px; display: flex; align-items: center; justify-content: center; }
+    .setting input[type='text'] { flex: 1; min-width: 0; margin-left: 4px; padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--text); font: inherit; font-size: 14px; }
+    .setting input[type='text']:focus { outline: 2px solid var(--accent); outline-offset: 0; }
+    .choice { flex: none; display: flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+    .choice button { padding: 7px 14px; border: 0; border-left: 1px solid var(--line); background: var(--panel); color: var(--text); font: inherit; font-size: 13px; cursor: pointer; }
+    .choice button:first-child { border-left: 0; }
+    .choice button:hover { background: var(--hover); }
+    .choice button[aria-pressed='true'] { background: var(--accent); color: var(--on-accent); font-weight: 600; }
+    .choice button:focus-visible { outline: 2px solid var(--amber); outline-offset: -2px; }
+    .setting .value { flex: none; max-width: 55%; font-size: 13px; text-align: right; overflow-wrap: anywhere; user-select: text; cursor: text; }
     .switch { flex: none; position: relative; width: 42px; height: 24px; padding: 0; border: 0; border-radius: 12px; background: var(--muted); cursor: pointer; transition: background 0.15s; }
     .switch::after { content: ''; position: absolute; top: 3px; left: 3px; width: 18px; height: 18px; border-radius: 50%; background: #fff; transition: transform 0.15s; }
     .switch[aria-checked='true'] { background: var(--accent); }
@@ -110,6 +135,25 @@
       return node;
     }
 
+    // App launcher icons. These are MailDock's own line drawings in the sidebar's colours, on purpose:
+    // the app must not carry Google's logos or brand colours. Names match Gmail > Google Apps in the menu.
+    const icon = (shape) => `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${shape}</svg>`;
+    const GRID = [5, 12, 19].flatMap((y) => [5, 12, 19].map((x) => `<circle cx="${x}" cy="${y}" r="1.7" fill="currentColor" stroke="none"/>`)).join('');
+    const APPS = [
+      ['Calendar', '<rect x="3.5" y="5" width="17" height="15" rx="2"/><path d="M3.5 10h17M8 3v4M16 3v4"/>'],
+      ['Drive', '<path d="M3.5 7.5a2 2 0 0 1 2-2h4l2 2.5h7a2 2 0 0 1 2 2V17a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/>'],
+      ['Meet', '<rect x="3" y="6.5" width="12" height="11" rx="2"/><path d="M15 10.5l6-3.5v10l-6-3.5z"/>'],
+      ['Contacts', '<circle cx="12" cy="8.5" r="3.5"/><path d="M5 20c.8-3.5 3.6-5.5 7-5.5s6.2 2 7 5.5"/>'],
+      ['Keep', '<path d="M9.5 18h5M10.5 21h3M12 3a6 6 0 0 0-3.5 10.9c.6.5 1 1.2 1 2.1h5c0-.9.4-1.6 1-2.1A6 6 0 0 0 12 3z"/>'],
+      ['Docs', '<path d="M7 3.5h7l4 4V19a1.5 1.5 0 0 1-1.5 1.5H7A1.5 1.5 0 0 1 5.5 19V5A1.5 1.5 0 0 1 7 3.5z"/><path d="M14 3.5V8h4M9 12h6M9 15.5h6"/>'],
+    ];
+    let appsOpen = false;
+    try {
+      appsOpen = localStorage.getItem('appsOpen') === '1';
+    } catch {
+      /* starts closed */
+    }
+
     function formatTime(ms) {
       const d = new Date(ms);
       const today = new Date().toDateString() === d.toDateString();
@@ -133,7 +177,7 @@
       for (const a of state.accounts) {
         const b = document.createElement('button');
         b.textContent = (a.name[0] || '?').toUpperCase();
-        b.title = `${a.name}\nDouble-click to rename, right-click to remove`;
+        b.title = `${a.name}\nDouble-click to rename, right-click to remove (or use Settings > Accounts)`;
         if (a.id === state.activeId && !state.inboxOpen && !state.settingsOpen) b.className = 'active';
         if (a.unread > 0) {
           const badge = document.createElement('span');
@@ -142,10 +186,8 @@
           b.appendChild(badge);
         }
         b.onclick = () => window.mailbox.select(a.id);
-        b.ondblclick = () => {
-          const name = prompt('Account name', a.name);
-          if (name) window.mailbox.rename(a.id, name);
-        };
+        // Electron has no prompt(), so renaming happens in Settings > Accounts.
+        b.ondblclick = () => openAccountEditor(lastState || state, a);
         b.oncontextmenu = (e) => {
           e.preventDefault();
           if (confirm(`Remove "${a.name}" from this app? You will be signed out of it.`)) window.mailbox.remove(a.id);
@@ -158,6 +200,37 @@
       add.title = 'Add account';
       add.onclick = () => window.mailbox.add();
       list.appendChild(add);
+
+      const apps = el('div');
+      apps.id = 'apps';
+      if (appsOpen) {
+        for (const [name, shape] of APPS) {
+          const b = el('button', 'app');
+          b.innerHTML = icon(shape);
+          b.title = `Google ${name}`;
+          b.setAttribute('aria-label', `Open Google ${name} in a new window`);
+          b.onclick = () => window.mailbox.openApp(name);
+          apps.appendChild(b);
+        }
+      }
+      const toggle = el('button', appsOpen ? 'open' : '');
+      toggle.id = 'appsToggle';
+      toggle.innerHTML = icon(GRID);
+      toggle.title = appsOpen ? 'Hide Google apps' : 'Google apps';
+      toggle.setAttribute('aria-label', 'Google apps');
+      toggle.setAttribute('aria-expanded', String(appsOpen));
+      toggle.onclick = () => {
+        appsOpen = !appsOpen;
+        try {
+          localStorage.setItem('appsOpen', appsOpen ? '1' : '');
+        } catch {
+          /* just not remembered */
+        }
+        render(state);
+        document.getElementById('appsToggle').focus();
+      };
+      apps.appendChild(toggle);
+      list.appendChild(apps);
 
       const gear = el('button', state.settingsOpen ? 'active' : '', '⚙');
       gear.id = 'gear';
@@ -176,17 +249,41 @@
         id: 'general',
         title: 'General',
         items: [
-          { name: 'Add Account', desc: 'Sign in to another Gmail account. Each account keeps its own separate session.', button: 'Add', run: () => window.mailbox.add() },
           { name: 'Launch at Login', desc: 'Start MailDock Web when you sign in to this computer.', key: 'launchAtLogin' },
-          { name: 'Minimize to System Tray', desc: 'Minimizing hides the window in the system tray instead of leaving it on the taskbar.', key: 'minimizeToTray' },
+          { name: 'Minimize to System Tray', desc: 'Minimizing hides the window in the system tray instead of leaving it on the taskbar. Needs the system tray icon.', key: 'minimizeToTray' },
         ],
       },
+      { id: 'accounts', title: 'Accounts', custom: renderAccountSettings },
       {
         id: 'appearance',
         title: 'Appearance',
         items: [
+          {
+            name: 'Theme',
+            desc: 'Colours for MailDock Web itself. Gmail keeps the theme chosen in its own settings.',
+            key: 'theme',
+            options: [['system', 'System'], ['dark', 'Dark'], ['light', 'Light']],
+          },
+          { name: 'Enable System Tray Icon', desc: 'Show MailDock Web in the system tray. When off, closing the window minimizes it to the taskbar instead.', key: 'trayIcon' },
+          { name: 'Show Unread Badges', desc: 'Show unread counts on the account buttons and on the taskbar icon.', key: 'unreadBadges' },
           { name: 'Edit Custom CSS', desc: 'Open custom.css in your editor. It is applied to Gmail in every account, and saving it applies the changes.', button: 'Open', run: () => window.mailbox.settingsAction('editCss') },
           { name: 'Reload Custom CSS', desc: 'Apply custom.css again now.', button: 'Reload', run: () => window.mailbox.settingsAction('reloadCss') },
+        ],
+      },
+      {
+        id: 'about',
+        title: 'About',
+        items: [
+          { name: 'Application Version', desc: 'The version of MailDock Web you are running.', value: (s) => s.about.version },
+          { name: 'Operating System', desc: 'The system this computer is running.', value: (s) => s.about.os },
+          { name: 'Device ID', desc: 'A random ID made for this installation. It is stored only on this computer and appears in exported logs.', value: (s) => s.about.deviceId },
+        ],
+      },
+      {
+        id: 'logs',
+        title: 'Logs',
+        items: [
+          { name: 'Export Logs', desc: 'Save a text file of what the app did and what went wrong, to send with a problem report. It never includes message content, senders or email addresses.', button: 'Export', run: () => window.mailbox.settingsAction('exportLogs') },
         ],
       },
     ];
@@ -214,12 +311,35 @@
       }
       const section = SETTINGS.find((s) => s.id === settingsSection);
       pane.appendChild(el('h2', '', section.title));
-      for (const item of section.items) {
+      if (section.custom) section.custom(state, pane);
+      for (const item of section.items || []) {
         const row = el('div', 'setting');
         const text = el('div', 'text');
         text.appendChild(el('div', 'name', item.name));
         text.appendChild(el('div', 'desc', item.desc));
         row.appendChild(text);
+        if (item.value) {
+          // Read-only information: plain selectable text, nothing to click.
+          row.appendChild(el('div', 'value', item.value(state)));
+          pane.appendChild(row);
+          continue;
+        }
+        if (item.options) {
+          // One of several: a row of buttons with the current choice pressed.
+          const group = el('div', 'choice');
+          group.setAttribute('role', 'group');
+          group.setAttribute('aria-label', item.name);
+          for (const [value, label] of item.options) {
+            const b = el('button', '', label);
+            b.setAttribute('aria-pressed', String(state.settings[item.key] === value));
+            b.dataset.focusKey = `item:${item.name}:${value}`;
+            b.onclick = () => window.mailbox.setSetting(item.key, value);
+            group.appendChild(b);
+          }
+          row.appendChild(group);
+          pane.appendChild(row);
+          continue;
+        }
         let control;
         if (item.key) {
           const on = Boolean(state.settings[item.key]);
@@ -238,6 +358,89 @@
         pane.appendChild(row);
       }
       if (focused) [...document.querySelectorAll('#settings [data-focus-key]')].find((n) => n.dataset.focusKey === focused)?.focus();
+    }
+
+    // Accounts section: every account with Edit (rename) and Remove, then Add Account.
+    // `editing` survives redraws, which happen whenever an unread count changes.
+    let editing = null; // { id, value }
+
+    function openAccountEditor(state, account) {
+      settingsSection = 'accounts';
+      editing = { id: account.id, value: account.name };
+      if (state.settingsOpen) renderSettings(state);
+      else window.mailbox.toggleSettings();
+    }
+
+    function renderAccountSettings(state, pane) {
+      if (editing && !state.accounts.some((a) => a.id === editing.id)) editing = null;
+      for (const a of state.accounts) {
+        const row = el('div', 'setting account');
+        row.appendChild(el('div', 'avatar', (a.name[0] || '?').toUpperCase()));
+        if (editing?.id === a.id) {
+          const input = el('input');
+          input.type = 'text';
+          input.maxLength = 40;
+          input.value = editing.value;
+          input.setAttribute('aria-label', 'Account name');
+          input.dataset.focusKey = `edit:${a.id}`;
+          input.oninput = () => (editing.value = input.value);
+          const save = () => {
+            const name = editing.value.trim();
+            editing = null;
+            if (name && name !== a.name) window.mailbox.rename(a.id, name);
+            else renderSettings(lastState);
+          };
+          const cancel = () => {
+            editing = null;
+            renderSettings(lastState);
+          };
+          input.onkeydown = (e) => {
+            if (e.key === 'Enter') save();
+            else if (e.key === 'Escape') cancel();
+          };
+          row.appendChild(input);
+          const saveBtn = el('button', 'action primary', 'Save');
+          saveBtn.dataset.focusKey = `save:${a.id}`;
+          saveBtn.onclick = save;
+          const cancelBtn = el('button', 'action', 'Cancel');
+          cancelBtn.dataset.focusKey = `cancel:${a.id}`;
+          cancelBtn.onclick = cancel;
+          row.append(saveBtn, cancelBtn);
+          // Put the cursor in the box when editing starts.
+          setTimeout(() => {
+            if (document.activeElement !== input && !document.activeElement?.dataset?.focusKey) input.focus();
+          }, 0);
+        } else {
+          const text = el('div', 'text');
+          text.appendChild(el('div', 'name', a.name));
+          row.appendChild(text);
+          const edit = el('button', 'action', 'Edit');
+          edit.setAttribute('aria-label', `Rename ${a.name}`);
+          edit.dataset.focusKey = `edit:${a.id}`;
+          edit.onclick = () => openAccountEditor(lastState, a);
+          const remove = el('button', 'action', 'Remove');
+          remove.setAttribute('aria-label', `Remove ${a.name}`);
+          remove.dataset.focusKey = `remove:${a.id}`;
+          // The app always keeps one account, so the last one cannot be removed.
+          remove.disabled = state.accounts.length <= 1;
+          if (remove.disabled) remove.title = 'Add another account before removing this one.';
+          remove.onclick = () => {
+            if (confirm(`Remove "${a.name}" from this app? You will be signed out of it.`)) window.mailbox.remove(a.id);
+          };
+          row.append(edit, remove);
+        }
+        pane.appendChild(row);
+      }
+      const add = el('div', 'setting');
+      const text = el('div', 'text');
+      text.appendChild(el('div', 'name', 'Add Account'));
+      text.appendChild(el('div', 'desc', 'Sign in to another Gmail account. Each account keeps its own separate session.'));
+      const addBtn = el('button', 'action', 'Add');
+      addBtn.setAttribute('aria-label', 'Add Account');
+      addBtn.dataset.focusKey = 'accounts:add';
+      addBtn.onclick = () => window.mailbox.add();
+      add.append(text, addBtn);
+      pane.appendChild(add);
     }
 
     function renderInbox(state) {

@@ -1,6 +1,7 @@
-const { app, BrowserWindow, WebContentsView, Menu, Tray, Notification, nativeImage, ipcMain, shell, net } = require('electron');
+const { app, BrowserWindow, WebContentsView, Menu, Tray, Notification, nativeImage, ipcMain, shell, net, dialog, nativeTheme } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 const crypto = require('crypto');
 
 const SIDEBAR_WIDTH = 68;
@@ -449,22 +450,29 @@ function createView(account) {
   );
 
   guardContents(wc);
-  wc.on('did-navigate', (_e, url) => {
+  watchAltKey(wc); // main-process only: the page cannot see it
+  let retries = 0;
+  wc.on('did-navigate', (_e, url, httpResponseCode) => {
     if (isGmailPromoPage(url)) wc.loadURL(SIGNIN_URL).catch(() => {});
     if (hostOf(url) === 'accounts.google.com') signedIn.delete(account.id);
+    // Only a page that really arrived counts. A failed load still reports Gmail's address,
+    // so going by the address alone would mark a blank error page as signed in.
+    if (httpResponseCode !== 200) return;
+    retries = 0;
+    if (url.startsWith('https://mail.google.com/mail/')) {
+      if (!signedIn.has(account.id)) log(`Account ${accounts.indexOf(account) + 1} of ${accounts.length} reached Gmail (signed in).`);
+      signedIn.add(account.id);
+    }
   });
   // The very first request after launch is sometimes refused (ERR_NETWORK_ACCESS_DENIED) and would
   // leave the view blank, so try again a few times before giving up.
-  let retries = 0;
   wc.on('did-fail-load', (_e, code, _description, url, isMainFrame) => {
     if (!isMainFrame || code === -3 || retries >= 5 || !/^https:/i.test(url)) return; // -3: navigation replaced by another
     retries += 1;
+    log(`Page failed to load at ${hostOf(url)} (${code} ${_description}), retry ${retries} of 5`);
     setTimeout(() => {
       if (!wc.isDestroyed()) wc.loadURL(url).catch(() => {});
     }, 1500 * retries);
-  });
-  wc.on('did-finish-load', () => {
-    if (/^https:/i.test(wc.getURL())) retries = 0;
   });
 
   // Gmail's title looks like "Inbox (3) - you@gmail.com - Gmail". The count normally comes from the
@@ -482,10 +490,7 @@ function createView(account) {
   wc.on('dom-ready', () => {
     applyCss(account.id);
     // Right after sign-in or a reload, don't wait for the next regular poll.
-    if (wc.getURL().startsWith('https://mail.google.com/mail/')) {
-      signedIn.add(account.id);
-      schedulePoll(account.id, 2000);
-    }
+    if (signedIn.has(account.id)) schedulePoll(account.id, 2000);
   });
 
   views.set(account.id, view);
@@ -672,8 +677,9 @@ async function pollFeed(id) {
     feed.entries = entries;
     if (fresh.length) notifyNewMail(id, fresh);
     pushState();
-  } catch {
+  } catch (err) {
     feed.failures += 1;
+    log(`New-mail check failed (${feed.failures} in a row): ${err?.message || err}`);
   }
 }
 
@@ -758,6 +764,7 @@ async function mailAction(id, messageId, action) {
   const spec = MAIL_ACTIONS.find((a) => a.action === action);
   if (!spec || !MESSAGE_ID.test(messageId)) return;
   const result = await sendMailAction(id, messageId, action);
+  log(`Mail action "${action}": ${result.ok ? 'done' : `failed: ${result.error}`}`);
   if (!result.ok) {
     showNotification({ title: `Could not ${spec.failed} the message`, body: `${result.error} Open the account in MailDock Web and do it in Gmail.` }, showWindow);
     return;
@@ -830,20 +837,30 @@ function inboxEntries() {
 // ---------------------------------------------------------------- badges + state
 const totalUnread = () => [...unread.values()].reduce((a, b) => a + b, 0);
 
+// With "Show Unread Badges" off, the sidebar, taskbar and dock all get zero and so draw nothing.
+const badgeCount = (count) => (settings.unreadBadges ? count : 0);
+
 function snapshot() {
   return {
     activeId,
     inboxOpen,
     settingsOpen,
-    settings: { launchAtLogin: getLaunchAtLogin(), minimizeToTray: settings.minimizeToTray },
+    settings: {
+      launchAtLogin: getLaunchAtLogin(),
+      minimizeToTray: settings.minimizeToTray,
+      theme: settings.theme,
+      trayIcon: settings.trayIcon,
+      unreadBadges: settings.unreadBadges,
+    },
+    about: aboutInfo(),
     inbox: inboxEntries(),
-    total: totalUnread(),
-    accounts: accounts.map((a) => ({ id: a.id, name: a.name, unread: unread.get(a.id) || 0 })),
+    total: badgeCount(totalUnread()),
+    accounts: accounts.map((a) => ({ id: a.id, name: a.name, unread: badgeCount(unread.get(a.id) || 0) })),
   };
 }
 
 function pushState() {
-  const total = totalUnread();
+  const total = badgeCount(totalUnread());
   if (process.platform === 'darwin' || process.platform === 'linux') app.setBadgeCount(total);
   if (process.platform === 'darwin') app.dock?.setBadge(total ? String(total) : '');
   tray?.setToolTip(total ? `MailDock Web: ${total} unread` : 'MailDock Web');
@@ -863,6 +880,11 @@ const settings = {
   // Named browserIdentity, not identity: the earlier "identity" setting had no stock option, and every
   // value it could hold was refused by Google, so it is deliberately not read any more.
   browserIdentity: 'stock',
+  deviceId: '', // random, made on first run (see ensureDeviceId)
+  theme: 'system', // system | dark | light
+  trayIcon: true,
+  unreadBadges: true,
+  menuBar: true, // shown until the user presses Alt, which toggles it
 };
 function loadSettings() {
   try {
@@ -878,6 +900,82 @@ function saveSettings() {
     /* the setting just won't be remembered */
   }
 }
+
+// ---------------------------------------------------------------- logs + about
+// A small plain-text log in the data folder, so a problem can be reported with Settings > Logs >
+// Export Logs. It records what the app did and what failed; never message content, senders,
+// subjects or email addresses.
+const LOG_MAX_BYTES = 512 * 1024;
+const logPath = () => path.join(app.getPath('userData'), 'maildock-web.log');
+
+function log(message) {
+  try {
+    const file = logPath();
+    if (fs.existsSync(file) && fs.statSync(file).size > LOG_MAX_BYTES) {
+      // Keep the newer half, cut at a line break.
+      const text = fs.readFileSync(file, 'utf8');
+      fs.writeFileSync(file, text.slice(text.indexOf('\n', Math.floor(text.length / 2)) + 1));
+    }
+    // Error text can quote an address, so mask anything that looks like one.
+    const line = String(message).replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, '<email>').replace(/\s+/g, ' ').trim();
+    fs.appendFileSync(file, `${new Date().toISOString()} ${line}\n`);
+  } catch {
+    /* logging must never break the app */
+  }
+}
+
+// The device ID is a random value made on first run and kept in settings.json. It is not derived
+// from hardware and is never sent anywhere; it only lets an exported log be matched to this install.
+function ensureDeviceId() {
+  if (/^[0-9a-f]{8}-[0-9a-f-]{27}$/.test(settings.deviceId)) return;
+  settings.deviceId = crypto.randomUUID();
+  saveSettings();
+}
+
+const aboutInfo = () => ({
+  version: app.getVersion(),
+  os: `${os.version()} (${os.release()}, ${process.arch})`,
+  deviceId: settings.deviceId,
+});
+
+async function exportLogs() {
+  if (!win || win.isDestroyed()) return;
+  const day = new Date().toISOString().slice(0, 10);
+  const { canceled, filePath } = await dialog.showSaveDialog(win, {
+    title: 'Export Logs',
+    defaultPath: path.join(app.getPath('documents'), `maildock-web-logs-${day}.txt`),
+    filters: [{ name: 'Text file', extensions: ['txt'] }],
+  });
+  if (canceled || !filePath) return;
+  const about = aboutInfo();
+  let entries = '';
+  try {
+    entries = fs.readFileSync(logPath(), 'utf8');
+  } catch {
+    /* nothing logged yet */
+  }
+  try {
+    fs.writeFileSync(
+      filePath,
+      [
+        `MailDock Web logs, exported ${new Date().toISOString()}`,
+        `Application version: ${about.version}`,
+        `Operating system: ${about.os}`,
+        `Device ID: ${about.deviceId}`,
+        `Electron ${process.versions.electron}, Chrome ${process.versions.chrome}`,
+        '',
+        entries || '(no log entries yet)',
+      ].join('\n')
+    );
+    log('Logs exported.');
+    shell.showItemInFolder(filePath);
+  } catch (err) {
+    dialog.showErrorBox('Could not export the logs', `${err.message}\n\nTry saving to a different folder.`);
+  }
+}
+
+// Record crashes without changing how Electron handles them.
+process.on('uncaughtExceptionMonitor', (err) => log(`Unhandled error: ${err?.stack || err}`));
 
 // The first time the window goes to the tray, say so, so it doesn't look like the app closed.
 function trayHint() {
@@ -895,8 +993,67 @@ function trayHint() {
 
 function hideToTray() {
   if (!win || win.isDestroyed()) return;
+  // With the tray icon turned off a hidden window could not be brought back, so keep it on the taskbar.
+  if (!tray) return void win.minimize();
   win.hide();
   trayHint();
+}
+
+// ---------------------------------------------------------------- appearance settings
+const THEMES = ['system', 'dark', 'light'];
+// Sets what the app's own pages and the sign-in pages see as the preferred colour scheme.
+// Gmail's inbox follows the theme chosen inside Gmail, not this.
+function applyTheme() {
+  nativeTheme.themeSource = THEMES.includes(settings.theme) ? settings.theme : 'system';
+}
+function setTheme(theme) {
+  if (!THEMES.includes(theme)) return;
+  settings.theme = theme;
+  saveSettings();
+  applyTheme();
+  pushState();
+}
+
+function setTrayIcon(on) {
+  settings.trayIcon = Boolean(on);
+  saveSettings();
+  if (settings.trayIcon && !tray) createTray();
+  if (!settings.trayIcon && tray) {
+    tray.destroy();
+    tray = null;
+    // A window that was hidden in the tray would now be unreachable.
+    if (win && !win.isDestroyed() && !win.isVisible()) showWindow();
+  }
+  pushState();
+}
+
+function setUnreadBadges(on) {
+  settings.unreadBadges = Boolean(on);
+  saveSettings();
+  pushState();
+}
+
+// The menu bar is shown by default; pressing Alt on its own hides it, and pressing it again brings it back.
+function setMenuBar(visible) {
+  settings.menuBar = Boolean(visible);
+  saveSettings();
+  if (!win || win.isDestroyed()) return;
+  win.setMenuBarVisibility(settings.menuBar);
+  setTimeout(layoutActive, 0); // the content area changes height
+}
+
+// Alt counts only when pressed and released with no other key in between, so Alt+Tab,
+// Alt+F4 and menu shortcuts do not toggle the bar.
+let altAlone = false;
+function watchAltKey(wc) {
+  wc.on('before-input-event', (_e, input) => {
+    if (input.key !== 'Alt') altAlone = false;
+    else if (input.type === 'keyDown') altAlone = input.isAutoRepeat ? altAlone : !input.control && !input.shift && !input.meta;
+    else if (input.type === 'keyUp' && altAlone) {
+      altAlone = false;
+      setMenuBar(!settings.menuBar);
+    }
+  });
 }
 
 function setMinimizeToTray(on) {
@@ -918,6 +1075,7 @@ function setSetting(key, on, rebuild) {
 function setIdentity(identity) {
   if (!IDENTITIES.some(([id]) => id === identity) || settings.browserIdentity === identity) return;
   settings.browserIdentity = identity;
+  log(`Sign-in compatibility changed to "${identity}".`);
   saveSettings();
   buildMenu();
   rebuildViews();
@@ -937,7 +1095,7 @@ function createWindow() {
     height: 860,
     minWidth: 720,
     minHeight: 480,
-    autoHideMenuBar: true, // menu bar stays hidden; press Alt to show it. Shortcuts still work.
+    autoHideMenuBar: false, // shown or hidden by setMenuBar (Alt toggles it); shortcuts work either way
     icon: process.platform === 'darwin' ? undefined : appIcon(256),
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
     webPreferences: {
@@ -960,6 +1118,8 @@ function createWindow() {
       relaunchDisplayName: 'MailDock Web',
     });
   }
+  win.setMenuBarVisibility(settings.menuBar);
+  watchAltKey(win.webContents);
   win.loadFile('shell.html');
   win.on('resize', layoutActive);
   // The X button never exits: the app keeps running in the tray. Quit from the tray menu or File > Quit.
@@ -970,7 +1130,7 @@ function createWindow() {
     }
   });
   win.on('minimize', () => {
-    if (settings.minimizeToTray) hideToTray();
+    if (settings.minimizeToTray && tray) hideToTray();
   });
   win.webContents.on('did-finish-load', () => {
     // Every account gets its view up front, so unread counts and mail actions work for
@@ -1110,23 +1270,35 @@ ipcMain.on('account:remove', (_e, id) => {
   if (activeId === id) {
     // Keep the unified inbox showing if that is where the account was removed from.
     const keepInbox = inboxOpen;
+    const keepSettings = settingsOpen; // removing from Settings > Accounts should stay on that page
     selectAccount(accounts[0].id);
     if (keepInbox) toggleInbox(true);
+    else if (keepSettings) toggleSettings(true);
   } else pushState();
 });
 // Unified inbox (sidebar page only: these change mail, so ignore any other sender)
 const fromShell = (e) => win && !win.isDestroyed() && e.sender === win.webContents;
 ipcMain.on('inbox:toggle', (e) => fromShell(e) && toggleInbox());
 ipcMain.on('settings:toggle', (e) => fromShell(e) && toggleSettings());
+// Sidebar app launcher: the page sends a name, never a URL, so it can only open what the menu can.
+ipcMain.on('apps:open', (e, name) => {
+  if (!fromShell(e)) return;
+  const found = GOOGLE_APPS.find(([label]) => label === name);
+  if (found) openGoogleApp(found[1]);
+});
 ipcMain.on('settings:set', (e, key, value) => {
   if (!fromShell(e)) return;
   if (key === 'launchAtLogin') setLaunchAtLogin(value);
   else if (key === 'minimizeToTray') setMinimizeToTray(value);
+  else if (key === 'theme') setTheme(value);
+  else if (key === 'trayIcon') setTrayIcon(value);
+  else if (key === 'unreadBadges') setUnreadBadges(value);
 });
 ipcMain.on('settings:action', (e, action) => {
   if (!fromShell(e)) return;
   if (action === 'editCss') editCustomCss();
   else if (action === 'reloadCss') applyCssAll();
+  else if (action === 'exportLogs') exportLogs();
 });
 ipcMain.on('inbox:open', (e, id, messageId) => fromShell(e) && openMessage(id, String(messageId)));
 ipcMain.on('inbox:action', (e, id, messageId, action) => fromShell(e) && mailAction(id, String(messageId), action));
@@ -1167,6 +1339,7 @@ ipcMain.on('overlay:set', (_e, dataUrl, total) => {
 // ---------------------------------------------------------------- lifecycle
 app.on('before-quit', () => {
   quitting = true;
+  log('Quit.');
 });
 
 app.whenReady().then(() => {
@@ -1181,8 +1354,11 @@ app.whenReady().then(() => {
   if (initialMailto) pendingMailto = initialMailto;
 
   loadSettings();
+  ensureDeviceId();
+  log(`Started MailDock Web ${app.getVersion()} on ${aboutInfo().os}; Electron ${process.versions.electron}; ${accounts.length} account(s); identity "${settings.browserIdentity}"${BARE ? `; diagnostic mode ${BARE}` : ''}.`);
+  applyTheme();
   buildMenu();
-  createTray();
+  if (settings.trayIcon) createTray();
   createWindow();
   if (BARE) console.log(`MailDock Web: diagnostic mode ${BARE}. Gmail views run as stock Electron; new-mail checks and tweaks are off.`);
   setupAutoUpdate();

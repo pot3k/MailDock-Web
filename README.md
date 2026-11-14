@@ -18,7 +18,7 @@ Sign in to Gmail inside the app. Each account is isolated in its own session, so
 
 Google actively blocks embedded browsers, and its checks change over time. There is no guarantee that Google accepts this app. If sign-in is refused:
 
-1. Try another identity under Gmail > Sign-in Compatibility (press Alt for the menu). Changing it reloads every account.
+1. Try another identity under Gmail > Sign-in Compatibility (in the menu bar; press Alt if you have hidden it). Changing it reloads every account.
    - **Standard (unmodified)**, the default: Electron exactly as it is. This is the one Google accepted when the others were refused (November 2026). Until an account is signed in, the app also holds back its blocker and new-mail checks for it.
    - **Clean Chromium User Agent**: the Electron and app names removed from the user agent.
    - **Present as Chrome**: also claims the Google Chrome brand (Client Hints, `navigator.userAgentData`, `window.chrome`) in every frame.
@@ -31,15 +31,16 @@ Google actively blocks embedded browsers, and its checks change over time. There
 
 ## Features
 
-- Multiple accounts in one window. Double-click a sidebar icon to rename, right-click to remove (this also signs that account out). Accounts name themselves from the Gmail page title.
+- Multiple accounts in one window. Rename or remove them in Settings > Accounts (double-clicking a sidebar icon opens the rename box, right-clicking removes; removing also signs that account out). Accounts name themselves from the Gmail page title.
 - Unread badge per account, plus totals on the dock (macOS), launcher (Linux) and taskbar overlay (Windows).
 - New-mail notifications for every account, with Archive, Mark as Read, Delete (moves to Trash) and Spam buttons. Clicking a notification opens the message. Turn them off under Gmail > New Mail Notifications; Gmail's own notifications then work again.
 - All Inboxes: the envelope button in the sidebar (Ctrl/Cmd+Shift+A) lists unread inbox mail from every signed-in account, with the same four actions. Click a row to open the message in its account.
 - Gmail tweaks (Gmail menu, off by default): Show Sender Icons, Attachments on Top, Compose in New Window. Changing one reloads Gmail in every account.
 - Ad and tracker blocker (Gmail > Block Ads and Trackers, on by default).
-- Other Google apps open in their own in-app windows, signed in to the same account: Gmail > Google Apps (Calendar, Drive, Meet, Contacts, Keep, Docs), or any Google link clicked in Gmail.
-- Settings page: the gear button at the bottom of the sidebar (Ctrl/Cmd+,). General has Add Account, Launch at Login and Minimize to System Tray; Appearance has Edit Custom CSS and Reload Custom CSS. The same items remain in the menus.
-- Menu bar hidden by default; press Alt to show it. Shortcuts still work: Ctrl/Cmd+1..9 switch account, Ctrl+Tab / Ctrl+Shift+Tab cycle, Ctrl/Cmd+Shift+N add account.
+- Other Google apps open in their own in-app windows, signed in to the same account: the grid button above the gear in the sidebar shows or hides icons for Calendar, Drive, Meet, Contacts, Keep and Docs, and Gmail > Google Apps in the menu bar lists the same six. Any Google link clicked in Gmail opens the same way. The sidebar icons are MailDock's own drawings, not Google's logos.
+- Settings page: the gear button at the bottom of the sidebar (Ctrl/Cmd+,). General has Launch at Login and Minimize to System Tray; Accounts lists every account with Edit (rename) and Remove, plus Add Account; Appearance has Theme (System, Dark or Light), Enable System Tray Icon, Show Unread Badges, Edit Custom CSS and Reload Custom CSS; About shows the application version, operating system and device ID; Logs has Export Logs. The theme applies to MailDock Web's own pages; Gmail keeps the theme chosen in its own settings. With the tray icon off, closing the window minimizes it to the taskbar instead of hiding it.
+- Logs: the app keeps a small log (`maildock-web.log` in the data folder, capped at about 500 KB) of what it did and what failed. It never records message content, senders, subjects or email addresses. Export Logs saves it as a text file with the About details at the top. The device ID is a random value made on first run; it is stored only on this computer and is not sent anywhere.
+- The menu bar is shown by default. Press Alt on its own to hide it, and again to bring it back; the choice is remembered. Shortcuts work either way: Ctrl/Cmd+1..9 switch account, Ctrl+Tab / Ctrl+Shift+Tab cycle, Ctrl/Cmd+Shift+N add account.
 - Tray icon; closing the window hides it to the tray (quit from the tray menu or File > Quit).
 - Launch at login (File menu).
 - Custom CSS: View > Edit Custom CSS… opens `custom.css`; saving applies it to Gmail live.

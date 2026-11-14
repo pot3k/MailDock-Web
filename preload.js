@@ -13,5 +13,6 @@ contextBridge.exposeInMainWorld('mailbox', {
   toggleSettings: () => ipcRenderer.send('settings:toggle'),
   setSetting: (key, value) => ipcRenderer.send('settings:set', key, value),
   settingsAction: (action) => ipcRenderer.send('settings:action', action),
+  openApp: (name) => ipcRenderer.send('apps:open', name),
   setOverlay: (dataUrl, total) => ipcRenderer.send('overlay:set', dataUrl, total),
 });
