@@ -1,0 +1,19 @@
+# Dependencies (restored with npm install)
+node_modules/
+
+# Installers and build output from electron-builder
+dist/
+out/
+
+# Logs and editor/OS clutter
+*.log
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Never commit credentials or local settings
+.env
+.env.*
+web-accounts.json
+settings.json
