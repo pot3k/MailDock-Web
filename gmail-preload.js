@@ -6,8 +6,6 @@ const { ipcRenderer } = require('electron');
 // They are fixed when the view is created, so main rebuilds the views when one changes.
 const flag = (name) => process.argv.includes(`--maildock-${name}`);
 const TWEAKS = {
-  senderIcons: flag('sender-icons'),
-  attachmentsOnTop: flag('attachments-on-top'),
   composeInNewWindow: flag('compose-in-new-window'),
 };
 
@@ -26,63 +24,27 @@ function reportUnread() {
 }
 
 // ---------------------------------------------------------------- tweaks
-function addSenderIcons() {
-  if (!TWEAKS.senderIcons) return;
-  for (const row of document.querySelectorAll("tr[id]:has(span[email*='@'])")) {
-    if (row.querySelector('.maildock-sender-icons')) continue;
-    const cell = row.querySelector("td:has(span[email*='@'])");
-    if (!cell) continue;
-    const domains = new Set();
-    for (const span of cell.querySelectorAll("span[email*='@']")) {
-      const domain = (span.getAttribute('email') || '').split('@')[1];
-      if (domain) domains.add(domain.toLowerCase());
-    }
-    if (domains.size === 0) continue;
-    const box = document.createElement('div');
-    box.className = 'maildock-sender-icons';
-    box.style.cssText = 'display:flex;align-items:center;justify-content:flex-end;min-width:24px;margin-right:8px';
-    let first = true;
-    for (const domain of domains) {
-      const img = document.createElement('img');
-      img.src = `https://www.google.com/s2/favicons?sz=32&domain=${encodeURIComponent(domain)}`;
-      img.title = domain;
-      img.style.cssText = `width:16px;height:16px;border-radius:50%;background:#fff;${first ? '' : 'margin-left:-8px'}`;
-      first = false;
-      box.appendChild(img);
-    }
-    cell.appendChild(box);
-  }
-}
+// Gmail's markup is undocumented, so the tweak leans on as little of it as it can and does
+// nothing when what it looks for is missing.
 
-function moveAttachmentsToTop() {
-  if (!TWEAKS.attachmentsOnTop) return;
-  for (const message of document.querySelectorAll('div:has(> .hq.gt)')) {
-    const attachments = message.querySelector(':scope > .hq.gt');
-    if (!attachments || message.firstChild === attachments) continue;
-    const line = document.createElement('div');
-    line.className = 'hp'; // Gmail's own divider style
-    line.style.marginTop = '16px';
-    attachments.appendChild(line);
-    message.prepend(attachments);
-  }
-}
-
-// Gmail opens Compose in a pop-out window on Shift+click, so replay the click with Shift held.
-function composeInNewWindow() {
-  if (!TWEAKS.composeInNewWindow) return;
-  const button = document.querySelector('.T-I.T-I-KE.L3:not([data-maildock-compose])');
-  if (!button) return;
-  button.setAttribute('data-maildock-compose', '');
-  let replaying = false;
-  button.addEventListener('click', (event) => {
-    if (replaying) {
-      replaying = false;
-      return;
-    }
-    replaying = true;
-    event.stopPropagation();
-    button.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window, shiftKey: true }));
-  });
+// Compose in a new window: take over the click on Gmail's Compose button and open Gmail's
+// full-window compose page instead. One listener on the document covers the button however
+// often Gmail redraws it.
+const COMPOSE_BUTTON = '[gh="cm"], .T-I.T-I-KE.L3';
+let composeHooked = false;
+function hookCompose() {
+  if (!TWEAKS.composeInNewWindow || composeHooked) return;
+  composeHooked = true;
+  document.addEventListener(
+    'click',
+    (event) => {
+      if (event.button !== 0 || !(event.target instanceof Element) || !event.target.closest(COMPOSE_BUTTON)) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      window.open(`${GMAIL_BASE}/?view=cm&fs=1&tf=1`, '_blank', 'width=760,height=680');
+    },
+    true
+  );
 }
 
 // ---------------------------------------------------------------- mail actions
@@ -134,7 +96,7 @@ ipcRenderer.on('gmail:action', async (_e, { requestId, messageId, action }) => {
 
 // ---------------------------------------------------------------- startup
 function runFeatures() {
-  for (const feature of [reportUnread, addSenderIcons, moveAttachmentsToTop, composeInNewWindow]) {
+  for (const feature of [reportUnread, hookCompose]) {
     try {
       feature();
     } catch (err) {

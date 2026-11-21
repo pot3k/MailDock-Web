@@ -1,4 +1,4 @@
-const { app, BrowserWindow, WebContentsView, Menu, Tray, Notification, nativeImage, ipcMain, shell, net, dialog, nativeTheme } = require('electron');
+const { app, BrowserWindow, WebContentsView, Menu, Tray, Notification, nativeImage, ipcMain, shell, net, dialog, nativeTheme, clipboard } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -8,122 +8,24 @@ const SIDEBAR_WIDTH = 68;
 // Every account is "user 0" of its own session, so the same URLs work for all of them.
 const GMAIL_URL = 'https://mail.google.com/mail/u/0/';
 const SIGNIN_URL = `https://accounts.google.com/ServiceLogin?service=mail&continue=${encodeURIComponent(GMAIL_URL)}`;
-const FEED_URL ='https://mail.google.com/mail/u/0/feed/atom';
+const FEED_URL = 'https://mail.google.com/mail/u/0/feed/atom';
+// The same feed limited to Gmail's Important label (system label ID "^iim"). Only read when the
+// "Only Important Emails" choice is on and new mail has arrived.
+const IMPORTANT_FEED_URL = `${FEED_URL}/%5Eiim`;
+const NOTIFY_MODES = ['all', 'important'];
 const FEED_POLL_MS = 30 * 1000;
 const FEED_POLL_MAX_MS = 5 * 60 * 1000;
 const MESSAGE_ID = /^[A-Za-z0-9]{10,}$/;
 
-// ---------------------------------------------------------------- browser identity
-// Google's sign-in refuses embedded browsers. Make every page look like a regular Chrome:
-// user agent, Client Hints (Sec-CH-UA and navigator.userAgentData) and window.chrome.
-const CHROME_FULL = process.versions.chrome;
-const CHROME_MAJOR = CHROME_FULL.split('.')[0];
-const PLATFORM_TOKEN = {
-  darwin: 'Macintosh; Intel Mac OS X 10_15_7',
-  win32: 'Windows NT 10.0; Win64; x64',
-  linux: 'X11; Linux x86_64',
-}[process.platform];
-const USER_AGENT = `Mozilla/5.0 (${PLATFORM_TOKEN}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${CHROME_MAJOR}.0.0.0 Safari/537.36`;
-// Chrome lists a decoy brand whose spelling, version and position all depend on the major version
-// ("Not?A_Brand" v99 for 130, "Not:A-Brand" v8 for 156…). A list that does not match the version
-// gives the app away, so build it the way Chrome does instead of hard-coding one.
-function chromeBrands(major, full) {
-  const seed = Number(major);
-  const chars = [' ', '(', ':', '-', '.', '/', ')', ';', '=', '?', '_'];
-  const decoyVersion = ['8', '99', '24'][seed % 3];
-  const order = [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]][seed % 6];
-  const list = [];
-  list[order[0]] = { brand: `Not${chars[seed % 11]}A${chars[(seed + 1) % 11]}Brand`, version: decoyVersion, full: `${decoyVersion}.0.0.0` };
-  list[order[1]] = { brand: 'Chromium', version: major, full };
-  list[order[2]] = { brand: 'Google Chrome', version: major, full };
-  return list;
-}
-const BRANDS = chromeBrands(CHROME_MAJOR, CHROME_FULL);
-const SEC_CH_UA = BRANDS.map((b) => `"${b.brand}";v="${b.version}"`).join(', ');
-const UA_METADATA = {
-  brands: BRANDS.map((b) => ({ brand: b.brand, version: b.version })),
-  fullVersionList: BRANDS.map((b) => ({ brand: b.brand, version: b.full })),
-  fullVersion: CHROME_FULL,
-  platform: { win32: 'Windows', darwin: 'macOS', linux: 'Linux' }[process.platform],
-  platformVersion: { win32: '15.0.0', darwin: '14.5.0', linux: '6.5.0' }[process.platform],
-  architecture: process.arch === 'arm64' ? 'arm' : 'x86',
-  bitness: '64',
-  model: '',
-  mobile: false,
-  wow64: false,
-};
-const NAV_PLATFORM = { win32: 'Win32', darwin: 'MacIntel', linux: 'Linux x86_64' }[process.platform];
-// Electron has a window.chrome, but an empty one; Chrome's always carries these three members.
-const CHROME_STUB = `(() => {
-  const c = window.chrome || (window.chrome = {});
-  if (!c.app) c.app = { isInstalled: false };
-  if (!c.loadTimes) c.loadTimes = function loadTimes() {};
-  if (!c.csi) c.csi = function csi() {};
-})();`;
-// Firefox sends no client hints at all, so in that mode they are stripped rather than rewritten.
-const FIREFOX_USER_AGENT = `Mozilla/5.0 (${PLATFORM_TOKEN.replace('10_15_7', '10.15')}; rv:140.0) Gecko/20100101 Firefox/140.0`;
-
-// How the Gmail views present themselves (Gmail > Sign-in Compatibility):
-//   stock:    Electron exactly as it is. On 2026-11-13 this was the only one Google let sign in,
-//             so it is the default; the others are kept in case Google's checks change again
-//   chromium: the Electron and app tokens removed from the user agent
-//   chrome:   also claims the Google Chrome brand through the debugger override below
-//   firefox:  a Firefox user agent
-const IDENTITIES = [
-  ['stock', 'Standard (unmodified)'],
-  ['chromium', 'Clean Chromium User Agent'],
-  ['chrome', 'Present as Chrome'],
-  ['firefox', 'Present as Firefox'],
-];
-// Diagnostic for refused sign-ins: MAILDOCK_BARE=1 runs the Gmail views as stock Electron with none of
-// this app's changes (no user agent, header rewriting, preload, blocker, permission handlers or feed
-// polling); MAILDOCK_BARE=2 is the same but with the Electron and app names removed from the user agent.
-// A sign-in made this way is kept, so the next normal start is already signed in.
-const BARE = ['1', '2'].includes(process.env.MAILDOCK_BARE) ? process.env.MAILDOCK_BARE : '';
-if (BARE === '2') app.userAgentFallback = USER_AGENT;
-const identityUserAgent = () => ({ stock: app.userAgentFallback, firefox: FIREFOX_USER_AGENT }[settings.browserIdentity] || USER_AGENT);
-
-const UA_OVERRIDE = { userAgent: USER_AGENT, acceptLanguage: 'en-US,en', platform: NAV_PLATFORM, userAgentMetadata: UA_METADATA };
-// Cross-site iframes and workers run in their own processes and do not inherit the page's override.
-// Google's sign-in embeds such a frame, so attach to each one and hold it until it is disguised too.
-const AUTO_ATTACH = { autoAttach: true, waitForDebuggerOnStart: true, flatten: true };
-const disguised = new WeakSet();
-
-async function disguiseTarget(dbg, sessionId) {
-  try {
-    await dbg.sendCommand('Emulation.setUserAgentOverride', UA_OVERRIDE, sessionId);
-    await dbg.sendCommand('Target.setAutoAttach', AUTO_ATTACH, sessionId);
-  } catch {
-    /* some target types do not take the override */
-  } finally {
-    dbg.sendCommand('Runtime.runIfWaitingForDebugger', {}, sessionId).catch(() => {});
-  }
-}
-
-async function disguise(wc) {
-  if (BARE || settings.browserIdentity !== 'chrome') return;
-  try {
-    if (!wc.debugger.isAttached()) wc.debugger.attach('1.3');
-    wc.debugger.once('detach', () => {
-      // re-apply if something detached the debugger (for example DevTools opening)
-      setTimeout(() => {
-        if (!wc.isDestroyed()) disguise(wc);
-      }, 500);
-    });
-    if (!disguised.has(wc)) {
-      disguised.add(wc);
-      wc.debugger.on('message', (_e, method, params) => {
-        if (method === 'Target.attachedToTarget') disguiseTarget(wc.debugger, params.sessionId);
-      });
-    }
-    await wc.debugger.sendCommand('Emulation.setUserAgentOverride', UA_OVERRIDE);
-    await wc.debugger.sendCommand('Page.enable');
-    await wc.debugger.sendCommand('Page.addScriptToEvaluateOnNewDocument', { source: CHROME_STUB });
-    await wc.debugger.sendCommand('Target.setAutoAttach', AUTO_ATTACH);
-  } catch (err) {
-    console.warn('Could not apply browser identity:', err.message);
-  }
-}
+// ---------------------------------------------------------------- sign-in
+// The Gmail views run as plain Electron: nothing in this app changes the user agent, the request
+// headers or anything else a page can see. Google's sign-in accepted exactly that, and refused
+// every attempt to present the app as a different browser, so those options were removed.
+// Keep it this way.
+//
+// Diagnostic for a refused sign-in: MAILDOCK_BARE=1 also drops the preload, blocker, permission
+// handlers and feed polling. A sign-in made this way is kept for the next normal start.
+const BARE = process.env.MAILDOCK_BARE === '1';
 
 // This project was first called "Mailbox Web". Keep using that data folder so Gmail sign-ins carry over the rename.
 app.setPath('userData', process.env.MAILDOCK_DATA_DIR || path.join(app.getPath('appData'), 'Mailbox Web'));
@@ -319,8 +221,8 @@ function handleWindowOpen(wc, { url }) {
     openMailto(url);
     return { action: 'deny' };
   }
-  // Sign-in must never run in a pop-up: a new window makes its first request before the browser
-  // disguise is attached, and Google then answers "This browser or app may not be secure".
+  // Sign-in belongs in the account's own view, not a pop-up: that is where Gmail loads afterwards,
+  // and a pop-up left open on a sign-in page would be easy to lose behind the main window.
   if (hostOf(url) === 'accounts.google.com') {
     wc.loadURL(url).catch(() => {});
     return { action: 'deny' };
@@ -334,28 +236,13 @@ function handleWindowOpen(wc, { url }) {
 
 function guardContents(wc) {
   wc.setWindowOpenHandler((details) => handleWindowOpen(wc, details));
-  wc.on('did-create-window', (child) => {
-    disguise(child.webContents);
-    guardContents(child.webContents);
-  });
+  wc.on('did-create-window', (child) => guardContents(child.webContents));
   wc.on('will-navigate', (event, url) => {
     if (!isGoogleHost(url)) {
       event.preventDefault();
       if (/^https?:/i.test(url)) shell.openExternal(url);
     }
   });
-}
-
-// The debugger commands only answer once there is a live page, so load a blank one first.
-// The timeout makes sure the real page still loads if the disguise step ever stalls.
-function loadDisguised(wc, url) {
-  if (settings.browserIdentity !== 'chrome') return void wc.loadURL(url).catch(() => {});
-  wc.loadURL('about:blank')
-    .catch(() => {})
-    .then(() => Promise.race([disguise(wc), new Promise((resolve) => setTimeout(resolve, 4000))]))
-    .then(() => {
-      if (!wc.isDestroyed()) wc.loadURL(url).catch(() => {});
-    });
 }
 
 const GOOGLE_APPS = [
@@ -377,15 +264,12 @@ function openGoogleApp(url) {
     icon: process.platform === 'darwin' ? undefined : appIcon(256),
     webPreferences: { session: view.webContents.session, contextIsolation: true, sandbox: true },
   });
-  if (settings.browserIdentity !== 'stock') child.webContents.setUserAgent(identityUserAgent());
   guardContents(child.webContents);
-  loadDisguised(child.webContents, url);
+  child.webContents.loadURL(url).catch(() => {});
 }
 
 function tweakArguments() {
   const args = [];
-  if (settings.senderIcons) args.push('--maildock-sender-icons');
-  if (settings.attachmentsOnTop) args.push('--maildock-attachments-on-top');
   if (settings.composeInNewWindow) args.push('--maildock-compose-in-new-window');
   return args;
 }
@@ -412,45 +296,23 @@ function createView(account) {
   const wc = view.webContents;
   const ses = wc.session;
 
-  // Until an account is signed in, its view must look like stock Electron: Google refused sign-in
-  // ("This browser or app may not be secure") while this app's changes were active, and accepted it
-  // without them. So the blocker and feed polling wait for signedIn, and the default identity
-  // changes nothing at all.
-  const stock = settings.browserIdentity === 'stock';
-  if (stock) {
-    ses.setUserAgent(app.userAgentFallback);
-  } else {
-    wc.setUserAgent(identityUserAgent());
-    ses.setUserAgent(identityUserAgent(), 'en-US,en');
-  }
+  // Until an account is signed in, its view must behave like plain Electron: Google refused sign-in
+  // ("This browser or app may not be secure") while more of this app's changes were active. So the
+  // blocker and feed polling wait for signedIn.
   // The setting is read per request, so turning the blocker on or off needs no reload.
   ses.webRequest.onBeforeRequest({ urls: ['<all_urls>'] }, (details, callback) => {
     callback({ cancel: settings.blocker && signedIn.has(account.id) && isBlocked(details.url) });
   });
-  // MailDock raises its own new-mail notifications; Gmail's would show every message twice.
-  // Only Gmail itself is refused, so the sign-in pages see the same defaults as before.
-  const allowed = (permission, origin) => !(permission === 'notifications' && settings.notifications && hostOf(origin) === 'mail.google.com');
+  // Gmail's own desktop notifications are always refused: MailDock Web raises its own, so Settings >
+  // Notifications > New Emails is the one switch, and off means no new-mail notifications at all.
+  // A check that names no page is refused too, since it may well be Gmail's. Other Google apps
+  // sharing this session (Calendar reminders, for example) keep their notifications.
+  const allowed = (permission, origin) => !(permission === 'notifications' && (!origin || hostOf(origin) === 'mail.google.com'));
   ses.setPermissionRequestHandler((contents, permission, callback, details) => callback(allowed(permission, details?.requestingUrl || contents?.getURL() || '')));
-  ses.setPermissionCheckHandler((_wc, permission, origin) => allowed(permission, origin || ''));
-  // Backup for requests the debugger override does not reach (iframes, service workers).
-  // Passing null removes a listener left by another identity earlier in this run.
-  ses.webRequest.onBeforeSendHeaders(
-    stock
-      ? null
-      : (details, callback) => {
-          const headers = details.requestHeaders;
-          for (const key of Object.keys(headers)) {
-            const lower = key.toLowerCase();
-            if (lower === 'user-agent') headers[key] = identityUserAgent();
-            else if (settings.browserIdentity === 'chrome' && lower === 'sec-ch-ua') headers[key] = SEC_CH_UA;
-            else if (settings.browserIdentity === 'firefox' && lower.startsWith('sec-ch-')) delete headers[key];
-          }
-          callback({ requestHeaders: headers });
-        }
-  );
-
+  ses.setPermissionCheckHandler((contents, permission, origin) => allowed(permission, origin || contents?.getURL() || ''));
   guardContents(wc);
   watchAltKey(wc); // main-process only: the page cannot see it
+  wc.on('context-menu', (_e, params) => showContextMenu(wc, params)); // also main-process only
   let retries = 0;
   wc.on('did-navigate', (_e, url, httpResponseCode) => {
     if (isGmailPromoPage(url)) wc.loadURL(SIGNIN_URL).catch(() => {});
@@ -495,7 +357,7 @@ function createView(account) {
 
   views.set(account.id, view);
   startFeed(account.id);
-  loadDisguised(wc, GMAIL_URL);
+  wc.loadURL(GMAIL_URL).catch(() => {});
   return view;
 }
 
@@ -675,11 +537,27 @@ async function pollFeed(id) {
     feed.seen = feed.seen || new Set();
     for (const e of entries) feed.seen.add(e.key);
     feed.entries = entries;
-    if (fresh.length) notifyNewMail(id, fresh);
+    if (fresh.length && settings.notifications) notifyNewMail(id, await notifiable(id, view, fresh));
     pushState();
   } catch (err) {
     feed.failures += 1;
     log(`New-mail check failed (${feed.failures} in a row): ${err?.message || err}`);
+  }
+}
+
+// With "Only Important Emails" chosen, keep the new messages that also appear in the Important
+// feed. If that check fails, notify about all of them: a missed email is worse than an extra alert.
+async function notifiable(id, view, fresh) {
+  if (settings.notifyMode !== 'important') return fresh;
+  try {
+    const res = await view.webContents.session.fetch(`${IMPORTANT_FEED_URL}?t=${Date.now()}`, { signal: AbortSignal.timeout(20000) });
+    const important = res.ok ? parseFeed(await res.text()) : null;
+    if (!important) throw new Error(res.ok ? 'Gmail did not return a feed' : `HTTP ${res.status}`);
+    const ids = new Set(important.map((e) => e.messageId));
+    return fresh.filter((e) => ids.has(e.messageId));
+  } catch (err) {
+    log(`Important-mail check failed, notifying about all ${fresh.length} new message(s): ${err?.message || err}`);
+    return fresh;
   }
 }
 
@@ -714,7 +592,7 @@ function showNotification(options, onClick, onAction) {
 }
 
 function notifyNewMail(id, fresh) {
-  if (!settings.notifications) return;
+  if (!settings.notifications || !fresh.length) return;
   const account = accounts.find((a) => a.id === id);
   if (!account) return;
   const suffix = accounts.length > 1 ? ` · ${account.name}` : '';
@@ -834,6 +712,51 @@ function inboxEntries() {
   return all.sort((a, b) => b.receivedAt - a.receivedAt);
 }
 
+// ---------------------------------------------------------------- right-click menu
+// Electron shows no menu of its own when a page is right-clicked, so build one. Gmail's own
+// menus (for example on a row of the inbox) cancel the event in the page, and then this one
+// does not appear, so the two never compete.
+const SEARCH_URL = 'https://www.google.com/search?q=';
+const MAX_SEARCH_CHARS = 500;
+
+function contextMenuTemplate(wc, params) {
+  const selected = (params.selectionText || '').trim();
+  if (params.isEditable) {
+    // Typing areas (compose, reply, search box) get the usual editing commands.
+    const can = params.editFlags || {};
+    return [
+      { label: 'Cut', enabled: Boolean(can.canCut), click: () => wc.cut() },
+      { label: 'Copy', enabled: Boolean(can.canCopy), click: () => wc.copy() },
+      { label: 'Paste', enabled: Boolean(can.canPaste), click: () => wc.paste() },
+      { type: 'separator' },
+      { label: 'Select All', click: () => wc.selectAll() },
+    ];
+  }
+  if (selected) {
+    return [
+      {
+        label: 'Search with Google',
+        // Opens in the computer's default browser, not inside the app.
+        click: () => shell.openExternal(SEARCH_URL + encodeURIComponent(selected.replace(/\s+/g, ' ').slice(0, MAX_SEARCH_CHARS))),
+      },
+      { type: 'separator' },
+      { label: 'Copy', click: () => wc.copy() },
+      { label: 'Select All', click: () => wc.selectAll() },
+    ];
+  }
+  const link = /^(https?|mailto):/i.test(params.linkURL || '') ? params.linkURL : '';
+  return [
+    { label: 'Select All', click: () => wc.selectAll() },
+    // Greyed out unless the click was on a link.
+    { label: 'Copy Link Address', enabled: Boolean(link), click: () => clipboard.writeText(link) },
+  ];
+}
+
+function showContextMenu(wc, params) {
+  if (!win || win.isDestroyed() || wc.isDestroyed()) return;
+  Menu.buildFromTemplate(contextMenuTemplate(wc, params)).popup({ window: win });
+}
+
 // ---------------------------------------------------------------- badges + state
 const totalUnread = () => [...unread.values()].reduce((a, b) => a + b, 0);
 
@@ -851,6 +774,8 @@ function snapshot() {
       theme: settings.theme,
       trayIcon: settings.trayIcon,
       unreadBadges: settings.unreadBadges,
+      notifications: settings.notifications,
+      notifyMode: settings.notifyMode,
     },
     about: aboutInfo(),
     inbox: inboxEntries(),
@@ -873,13 +798,9 @@ const settings = {
   minimizeToTray: true,
   trayHintShown: false,
   notifications: true,
+  notifyMode: 'all', // all | important
   blocker: true,
-  senderIcons: false,
-  attachmentsOnTop: false,
   composeInNewWindow: false,
-  // Named browserIdentity, not identity: the earlier "identity" setting had no stock option, and every
-  // value it could hold was refused by Google, so it is deliberately not read any more.
-  browserIdentity: 'stock',
   deviceId: '', // random, made on first run (see ensureDeviceId)
   theme: 'system', // system | dark | light
   trayIcon: true,
@@ -889,6 +810,12 @@ const settings = {
 function loadSettings() {
   try {
     Object.assign(settings, JSON.parse(fs.readFileSync(settingsPath(), 'utf8')));
+    // Left over from the removed sign-in compatibility options.
+    delete settings.identity;
+    delete settings.browserIdentity;
+    // Left over from the removed Show Sender Icons and Attachments on Top tweaks.
+    delete settings.senderIcons;
+    delete settings.attachmentsOnTop;
   } catch {
     /* first run: keep the defaults */
   }
@@ -1069,16 +996,15 @@ function setSetting(key, on, rebuild) {
   saveSettings();
   buildMenu();
   if (rebuild) rebuildViews();
+  pushState();
 }
 
-// The identity is applied when a view is created, so every account reloads.
-function setIdentity(identity) {
-  if (!IDENTITIES.some(([id]) => id === identity) || settings.browserIdentity === identity) return;
-  settings.browserIdentity = identity;
-  log(`Sign-in compatibility changed to "${identity}".`);
+function setNotifyMode(mode) {
+  if (!NOTIFY_MODES.includes(mode)) return;
+  settings.notifyMode = mode;
   saveSettings();
   buildMenu();
-  rebuildViews();
+  pushState();
 }
 
 // ---------------------------------------------------------------- window, tray, menu
@@ -1204,17 +1130,19 @@ function buildMenu() {
       label: 'Gmail',
       submenu: [
         { label: 'New Mail Notifications', type: 'checkbox', checked: settings.notifications, click: (item) => setSetting('notifications', item.checked) },
+        {
+          label: 'Notify About',
+          enabled: settings.notifications,
+          submenu: [
+            { label: 'All New Emails', type: 'radio', checked: settings.notifyMode !== 'important', click: () => setNotifyMode('all') },
+            { label: 'Only Important Emails', type: 'radio', checked: settings.notifyMode === 'important', click: () => setNotifyMode('important') },
+          ],
+        },
         { label: 'Block Ads and Trackers', type: 'checkbox', checked: settings.blocker, click: (item) => setSetting('blocker', item.checked) },
         { type: 'separator' },
-        { label: 'Show Sender Icons', type: 'checkbox', checked: settings.senderIcons, click: (item) => setSetting('senderIcons', item.checked, true) },
-        { label: 'Attachments on Top', type: 'checkbox', checked: settings.attachmentsOnTop, click: (item) => setSetting('attachmentsOnTop', item.checked, true) },
         { label: 'Compose in New Window', type: 'checkbox', checked: settings.composeInNewWindow, click: (item) => setSetting('composeInNewWindow', item.checked, true) },
         { type: 'separator' },
         { label: 'Google Apps', submenu: GOOGLE_APPS.map(([label, url]) => ({ label, click: () => openGoogleApp(url) })) },
-        {
-          label: 'Sign-in Compatibility',
-          submenu: IDENTITIES.map(([id, label]) => ({ label, type: 'radio', checked: settings.browserIdentity === id, click: () => setIdentity(id) })),
-        },
       ],
     },
     {
@@ -1293,6 +1221,8 @@ ipcMain.on('settings:set', (e, key, value) => {
   else if (key === 'theme') setTheme(value);
   else if (key === 'trayIcon') setTrayIcon(value);
   else if (key === 'unreadBadges') setUnreadBadges(value);
+  else if (key === 'notifications') setSetting('notifications', value);
+  else if (key === 'notifyMode') setNotifyMode(value);
 });
 ipcMain.on('settings:action', (e, action) => {
   if (!fromShell(e)) return;
@@ -1355,12 +1285,12 @@ app.whenReady().then(() => {
 
   loadSettings();
   ensureDeviceId();
-  log(`Started MailDock Web ${app.getVersion()} on ${aboutInfo().os}; Electron ${process.versions.electron}; ${accounts.length} account(s); identity "${settings.browserIdentity}"${BARE ? `; diagnostic mode ${BARE}` : ''}.`);
+  log(`Started MailDock Web ${app.getVersion()} on ${aboutInfo().os}; Electron ${process.versions.electron}; ${accounts.length} account(s)${BARE ? '; diagnostic mode' : ''}.`);
   applyTheme();
   buildMenu();
   if (settings.trayIcon) createTray();
   createWindow();
-  if (BARE) console.log(`MailDock Web: diagnostic mode ${BARE}. Gmail views run as stock Electron; new-mail checks and tweaks are off.`);
+  if (BARE) console.log('MailDock Web: diagnostic mode. Gmail views run as stock Electron; new-mail checks and tweaks are off.');
   setupAutoUpdate();
 
   app.on('activate', showWindow);
