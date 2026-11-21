@@ -537,7 +537,10 @@ async function pollFeed(id) {
     feed.seen = feed.seen || new Set();
     for (const e of entries) feed.seen.add(e.key);
     feed.entries = entries;
-    if (fresh.length && settings.notifications) notifyNewMail(id, await notifiable(id, view, fresh));
+    if (fresh.length && settings.notifications) {
+      if (withinNotifyTimes(new Date())) notifyNewMail(id, await notifiable(id, view, fresh));
+      else log(`Outside notification times: no notification for ${fresh.length} new message(s).`);
+    }
     pushState();
   } catch (err) {
     feed.failures += 1;
@@ -776,6 +779,7 @@ function snapshot() {
       unreadBadges: settings.unreadBadges,
       notifications: settings.notifications,
       notifyMode: settings.notifyMode,
+      notifyTimes: notifyTimes(),
     },
     about: aboutInfo(),
     inbox: inboxEntries(),
@@ -799,6 +803,8 @@ const settings = {
   trayHintShown: false,
   notifications: true,
   notifyMode: 'all', // all | important
+  // Days are 0 (Sunday) to 6 (Saturday), as Date.getDay() numbers them.
+  notifyTimes: { enabled: false, from: '08:00', to: '18:00', days: [1, 2, 3, 4, 5] },
   blocker: true,
   composeInNewWindow: false,
   deviceId: '', // random, made on first run (see ensureDeviceId)
@@ -1005,6 +1011,55 @@ function setNotifyMode(mode) {
   saveSettings();
   buildMenu();
   pushState();
+}
+
+// ---------------------------------------------------------------- notification times
+const TIME = /^([01]\d|2[0-3]):[0-5]\d$/;
+const DEFAULT_NOTIFY_TIMES = { enabled: false, from: '08:00', to: '18:00', days: [1, 2, 3, 4, 5] };
+
+// settings.json can be edited by hand, so every part is checked and falls back to the default.
+function notifyTimes(value = settings.notifyTimes) {
+  const v = value && typeof value === 'object' ? value : {};
+  const days = Array.isArray(v.days) ? [...new Set(v.days.filter((d) => Number.isInteger(d) && d >= 0 && d <= 6))].sort() : DEFAULT_NOTIFY_TIMES.days;
+  return {
+    enabled: v.enabled === true,
+    from: TIME.test(v.from) ? v.from : DEFAULT_NOTIFY_TIMES.from,
+    to: TIME.test(v.to) ? v.to : DEFAULT_NOTIFY_TIMES.to,
+    days,
+  };
+}
+
+const minutesOf = (hhmm) => Number(hhmm.slice(0, 2)) * 60 + Number(hhmm.slice(3));
+
+// A period that ends earlier than it starts runs past midnight (22:00 to 07:00), and the small hours
+// belong to the day it started on: with only Friday chosen, 01:00 on Saturday is still notified.
+// The same start and end time means the whole of each chosen day.
+function withinNotifyTimes(now) {
+  const t = notifyTimes();
+  if (!t.enabled) return true;
+  const day = now.getDay();
+  const minute = now.getHours() * 60 + now.getMinutes();
+  const from = minutesOf(t.from);
+  const to = minutesOf(t.to);
+  if (from === to) return t.days.includes(day);
+  if (from < to) return t.days.includes(day) && minute >= from && minute < to;
+  return (t.days.includes(day) && minute >= from) || (t.days.includes((day + 6) % 7) && minute < to);
+}
+
+function setNotifyTimes(value) {
+  settings.notifyTimes = notifyTimes(value);
+  saveSettings();
+  pushState();
+}
+
+// Shown whatever the settings above say, so people can check that Windows lets notifications through.
+function testNotification() {
+  if (!Notification.isSupported()) {
+    dialog.showErrorBox('Notifications are not available', 'This system does not support desktop notifications.');
+    return;
+  }
+  log('Test notification shown.');
+  showNotification({ title: 'Test notification', body: 'Notifications from MailDock Web are working.' }, showWindow);
 }
 
 // ---------------------------------------------------------------- window, tray, menu
@@ -1223,12 +1278,14 @@ ipcMain.on('settings:set', (e, key, value) => {
   else if (key === 'unreadBadges') setUnreadBadges(value);
   else if (key === 'notifications') setSetting('notifications', value);
   else if (key === 'notifyMode') setNotifyMode(value);
+  else if (key === 'notifyTimes') setNotifyTimes(value);
 });
 ipcMain.on('settings:action', (e, action) => {
   if (!fromShell(e)) return;
   if (action === 'editCss') editCustomCss();
   else if (action === 'reloadCss') applyCssAll();
   else if (action === 'exportLogs') exportLogs();
+  else if (action === 'testNotification') testNotification();
 });
 ipcMain.on('inbox:open', (e, id, messageId) => fromShell(e) && openMessage(id, String(messageId)));
 ipcMain.on('inbox:action', (e, id, messageId, action) => fromShell(e) && mailAction(id, String(messageId), action));

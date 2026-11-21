@@ -97,7 +97,13 @@
     .choice button:hover { background: var(--hover); }
     .choice button[aria-pressed='true'] { background: var(--accent); color: var(--on-accent); font-weight: 600; }
     .choice button:focus-visible { outline: 2px solid var(--amber); outline-offset: -2px; }
-    .setting.off .text, .setting.off .choice { opacity: 0.5; }
+    .setting.off .text, .setting.off .choice, .setting.off .timerange, .setting.off .switch { opacity: 0.5; }
+    .switch:disabled { cursor: default; }
+    #settings h3.subhead { margin: 22px 0 0; font-size: 14px; font-weight: 650; max-width: 720px; }
+    .timerange { flex: none; display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
+    .timerange input[type='time'] { padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--text); font: inherit; font-size: 13px; }
+    .timerange input[type='time']:focus { outline: 2px solid var(--accent); outline-offset: 0; }
+    .choice.days button { padding: 7px 10px; min-width: 44px; }
     .choice button:disabled { cursor: default; }
     .choice button:disabled:hover { background: var(--panel); }
     .choice button[aria-pressed='true']:disabled:hover { background: var(--accent); }
@@ -271,6 +277,13 @@
             // Only matters while New Emails is on.
             disabled: (s) => !s.settings.notifications,
           },
+          { render: renderNotifyTimes },
+          {
+            name: 'Test Notification',
+            desc: 'Show a sample notification now, whatever the settings above say. If none appears, check Windows notification settings and Do Not Disturb.',
+            button: 'Test',
+            run: () => window.mailbox.settingsAction('testNotification'),
+          },
         ],
       },
       {
@@ -313,6 +326,9 @@
       lastState = state;
       document.body.classList.toggle('settings-open', state.settingsOpen);
       if (!state.settingsOpen) return;
+      // A redraw would wipe a time that is half typed (they come with every unread-count change),
+      // so wait until the box loses focus; its blur handler redraws.
+      if (document.activeElement?.matches?.("#settings input[type='time']")) return;
       // Redrawing drops keyboard focus, so remember which control had it.
       const focused = document.activeElement?.dataset?.focusKey;
       const nav = document.getElementById('settings-nav');
@@ -332,6 +348,10 @@
       pane.appendChild(el('h2', '', section.title));
       if (section.custom) section.custom(state, pane);
       for (const item of section.items || []) {
+        if (item.render) {
+          item.render(state, pane);
+          continue;
+        }
         const row = el('div', 'setting');
         const text = el('div', 'text');
         text.appendChild(el('div', 'name', item.name));
@@ -380,6 +400,71 @@
         pane.appendChild(row);
       }
       if (focused) [...document.querySelectorAll('#settings [data-focus-key]')].find((n) => n.dataset.focusKey === focused)?.focus();
+    }
+
+    // Notification times: an on/off switch, a From–To time and the days of the week.
+    const DAYS = [[0, 'Sun'], [1, 'Mon'], [2, 'Tue'], [3, 'Wed'], [4, 'Thu'], [5, 'Fri'], [6, 'Sat']];
+
+    function renderNotifyTimes(state, pane) {
+      const t = state.settings.notifyTimes;
+      const save = (change) => window.mailbox.setSetting('notifyTimes', { ...t, ...change });
+      const allOff = !state.settings.notifications; // nothing to schedule while New Emails is off
+      const timesOff = allOff || !t.enabled;
+      const row = (name, desc, off) => {
+        const r = el('div', 'setting' + (off ? ' off' : ''));
+        const text = el('div', 'text');
+        text.appendChild(el('div', 'name', name));
+        text.appendChild(el('div', 'desc', desc));
+        r.appendChild(text);
+        return r;
+      };
+
+      pane.appendChild(el('h3', 'subhead', 'Notification Times'));
+
+      const limit = row('Only at Set Times', 'Show notifications only on the days and between the times below. Mail that arrives outside them is still counted and listed in All Inboxes.', allOff);
+      const sw = el('button', 'switch');
+      sw.setAttribute('role', 'switch');
+      sw.setAttribute('aria-checked', String(t.enabled));
+      sw.setAttribute('aria-label', 'Only at Set Times');
+      sw.disabled = allOff;
+      sw.dataset.focusKey = 'times:enabled';
+      sw.onclick = () => save({ enabled: !t.enabled });
+      limit.appendChild(sw);
+      pane.appendChild(limit);
+
+      const time = row('Time', 'From the first time until the second. If the second is earlier, the period runs past midnight; the same time twice means all day.', timesOff);
+      const range = el('div', 'timerange');
+      const box = (key, label) => {
+        const input = el('input');
+        input.type = 'time';
+        input.value = t[key];
+        input.disabled = timesOff;
+        input.setAttribute('aria-label', label);
+        input.dataset.focusKey = `times:${key}`;
+        // 'change' fires once a complete time is entered; an emptied box is ignored.
+        input.onchange = () => input.value && save({ [key]: input.value });
+        input.onblur = () => setTimeout(() => renderSettings(lastState), 0);
+        return input;
+      };
+      range.append(box('from', 'From'), el('span', '', 'to'), box('to', 'To'));
+      time.appendChild(range);
+      pane.appendChild(time);
+
+      const days = row('Days', t.enabled && !t.days.length ? 'No days are chosen, so no new-mail notifications will be shown.' : 'The days of the week to show notifications on.', timesOff);
+      const group = el('div', 'choice days');
+      group.setAttribute('role', 'group');
+      group.setAttribute('aria-label', 'Days');
+      for (const [n, label] of DAYS) {
+        const b = el('button', '', label);
+        const on = t.days.includes(n);
+        b.disabled = timesOff;
+        b.setAttribute('aria-pressed', String(on));
+        b.dataset.focusKey = `times:day:${n}`;
+        b.onclick = () => save({ days: on ? t.days.filter((d) => d !== n) : [...t.days, n] });
+        group.appendChild(b);
+      }
+      days.appendChild(group);
+      pane.appendChild(days);
     }
 
     // Accounts section: every account with Edit (rename) and Remove, then Add Account.
