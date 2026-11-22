@@ -2,7 +2,10 @@
   "name": "maildock-web",
   "productName": "MailDock Web",
   "version": "0.1.0",
-  "description": "MailDock Web: Gmail's own web interface in a desktop app",
+  "description": "MailDock Web",
+  "author": "pot3k",
+  "license": "MIT",
+  "repository": "github:pot3k/MailDock-Web",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
@@ -17,7 +20,9 @@
     "electron-builder": "^25.0.0"
   },
   "build": {
-    "appId": "com.example.maildock.web",
+    "appId": "io.github.pot3k.maildock.web",
+    "copyright": "Copyright © 2026 pot3k",
+    "electronDist": "node_modules/electron/dist",
     "files": [
       "main.js",
       "preload.js",
@@ -38,8 +43,8 @@
     "publish": [
       {
         "provider": "github",
-        "owner": "YOUR_GITHUB_USER",
-        "repo": "YOUR_REPO"
+        "owner": "pot3k",
+        "repo": "MailDock-Web"
       }
     ],
     "mac": {

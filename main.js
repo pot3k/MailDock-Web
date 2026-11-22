@@ -30,7 +30,8 @@ const BARE = process.env.MAILDOCK_BARE === '1';
 
 // This project was first called "Mailbox Web". Keep using that data folder so Gmail sign-ins carry over the rename.
 app.setPath('userData', process.env.MAILDOCK_DATA_DIR || path.join(app.getPath('appData'), 'Mailbox Web'));
-const APP_ID = 'com.example.maildock.web';
+// Must match build.appId in package.json: Windows ties notifications and the taskbar button to it.
+const APP_ID = 'io.github.pot3k.maildock.web';
 if (process.platform === 'win32') app.setAppUserModelId(APP_ID);
 
 // ---------------------------------------------------------------- Windows app identity
@@ -54,8 +55,11 @@ function registerWindowsIdentity() {
   try {
     // Only touch Electron.lnk if it belongs to this app; other Electron projects make their own.
     const theirs = read(generic)?.appUserModelId === APP_ID ? read(generic) : null;
-    const toastActivatorClsid = theirs?.toastActivatorClsid || read(ours)?.toastActivatorClsid;
-    if (!theirs && read(ours)) return;
+    // A shortcut made under an earlier app ID (com.example.maildock.web) is replaced, and its
+    // activator ID is not reused: it belonged to the old ID.
+    const mine = read(ours)?.appUserModelId === APP_ID ? read(ours) : null;
+    const toastActivatorClsid = theirs?.toastActivatorClsid || mine?.toastActivatorClsid;
+    if (!theirs && mine) return;
     shell.writeShortcutLink(ours, fs.existsSync(ours) ? 'replace' : 'create', {
       target: process.execPath,
       args: `"${app.getAppPath()}"`,
@@ -1326,9 +1330,12 @@ function buildMenu() {
 function setupAutoUpdate() {
   if (!app.isPackaged) return;
   try {
-    require('electron-updater').autoUpdater.checkForUpdatesAndNotify();
+    // Fails until the GitHub repo has a published release (and while offline); that is not an error worth showing.
+    require('electron-updater')
+      .autoUpdater.checkForUpdatesAndNotify()
+      .catch((err) => log(`Update check failed: ${String(err?.message || err).split('\n')[0]}`));
   } catch (err) {
-    console.warn('Auto-update unavailable:', err.message);
+    log(`Auto-update unavailable: ${err.message}`);
   }
 }
 

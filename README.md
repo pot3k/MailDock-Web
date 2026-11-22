@@ -13,6 +13,14 @@ Needs Node.js 22.12 or newer: Electron 45 cannot download itself on older versio
 
 Sign in to Gmail inside the app. Each account is isolated in its own session, so logins persist across restarts.
 
+## Build an installer
+
+```
+npm run dist
+```
+
+This makes `dist\MailDock Web Setup <version>.exe`, a per-user Windows installer that needs no admin rights. The version comes from `package.json`. The installer is not code-signed, so Windows SmartScreen shows "Windows protected your PC" the first time; click More info, then Run anyway. The installed app keeps its data in the same `%APPDATA%\Mailbox Web` folder as `npm start`, so it opens with the same accounts and settings.
+
 ## If Google says "This browser or app may not be secure"
 
 Google actively blocks embedded browsers, and its checks change over time. There is no guarantee that Google accepts this app.
@@ -43,7 +51,7 @@ The app runs Gmail as plain Electron: it does not change its user agent or prete
 - `mailto:` links open a Gmail compose window once MailDock Web is your default email app. On Windows, Settings > General > Default Mail Client registers MailDock Web as an email app for your Windows user (no admin rights needed) and opens Windows Settings > Default apps at MailDock Web's page; click MAILTO there and choose MailDock Web. Windows only lets you make that choice yourself. On other systems, choose the default email app in the system settings.
 - Links to non-Google sites open in your default browser.
 - Right-click menu in Gmail: on text or a link, Select All and Copy Link Address (greyed out when not on a link); with text selected, Search with Google (opens your default browser), Copy and Select All; in a typing area such as Compose, Cut, Copy, Paste and Select All. Gmail's own right-click menus, for example on an inbox row, still appear where Gmail provides them.
-- Auto-update via `electron-updater` in packaged builds (set `build.publish` in `package.json`, then set `GH_TOKEN` and run `npm run release`).
+- Auto-update via `electron-updater` in installed builds: on start, the app checks the GitHub releases of `pot3k/MailDock-Web` for a newer version. To publish one, raise `version` in `package.json`, set `GH_TOKEN` to a GitHub token, and run `npm run release`.
 
 ## Inside the code
 
@@ -73,3 +81,7 @@ Points 3 to 6 rely on parts of Gmail that Google does not document and can chang
 - Icons: `icon.png` (window, tray, sidebar mark) and `icon.ico` (Windows installer) are the MailDock mark cut from the logo. Replace those two files to change the icon.
 - Sounds: the notification sounds are `sounds/Sound_1.wav` to `sounds/Sound_10.wav`. The list in Settings > Notifications > Sound comes from `SOUNDS` in `main.js`; to add one, put the file in `sounds/` and add it there.
 - Third-party app, not affiliated with Google.
+
+## License
+
+MIT, see [LICENSE](LICENSE). Copyright (c) 2026 pot3k.
