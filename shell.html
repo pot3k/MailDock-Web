@@ -141,6 +141,7 @@
   </section>
   <script>
     if (/Mac/.test(navigator.platform)) document.body.classList.add('mac');
+    const IS_WINDOWS = /^Win/.test(navigator.platform);
     const list = document.getElementById('list');
     const rows = document.getElementById('rows');
     const note = document.getElementById('inbox-note');
@@ -269,6 +270,13 @@
         items: [
           { name: 'Launch at Login', desc: 'Start MailDock Web when you sign in to this computer.', key: 'launchAtLogin' },
           { name: 'Minimize to System Tray', desc: 'Minimizing hides the window in the system tray instead of leaving it on the taskbar. Needs the system tray icon.', key: 'minimizeToTray' },
+          {
+            name: 'Default Mail Client',
+            desc: 'Make MailDock Web the app that opens email links. Windows only lets you change this yourself: in the Settings page that opens, click MAILTO and choose MailDock Web.',
+            button: 'Windows Settings',
+            run: () => window.mailbox.settingsAction('defaultMailClient'),
+            windowsOnly: true, // other systems choose the email app elsewhere
+          },
         ],
       },
       { id: 'accounts', title: 'Accounts', custom: renderAccountSettings },
@@ -357,6 +365,7 @@
       pane.appendChild(el('h2', '', section.title));
       if (section.custom) section.custom(state, pane);
       for (const item of section.items || []) {
+        if (item.windowsOnly && !IS_WINDOWS) continue;
         if (item.render) {
           item.render(state, pane);
           continue;
@@ -478,7 +487,7 @@
 
     // Sound section: the system's own sound, no sound, or one of the app's sounds. Choosing a sound
     // plays it once; Play only listens, so sounds can be compared without changing the choice.
-    const SYSTEM_SOUND = /^Win/.test(navigator.platform) ? 'Windows Default' : 'System Default';
+    const SYSTEM_SOUND = IS_WINDOWS ? 'Windows Default' : 'System Default';
 
     function renderSoundSettings(state, pane) {
       const current = state.settings.notifySound;

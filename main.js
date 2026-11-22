@@ -3,6 +3,7 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const crypto = require('crypto');
+const { execFile } = require('child_process');
 
 const SIDEBAR_WIDTH = 68;
 // Every account is "user 0" of its own session, so the same URLs work for all of them.
@@ -1096,6 +1097,63 @@ function setNotifySound(choice) {
   pushState();
 }
 
+// ---------------------------------------------------------------- default mail client
+// Windows lets only the user pick the default email app, in Settings > Default apps, and lists
+// only apps that have registered as able to open mailto links. setAsDefaultProtocolClient does not
+// register that way, so the Settings button first registers MailDock Web for the current user
+// (no admin rights needed), then opens Default apps at MailDock Web's own page.
+const MAIL_APP_NAME = 'MailDock Web';
+const MAIL_PROG_ID = 'MailDockWeb.mailto';
+const MAIL_CAPABILITIES = 'Software\\MailDock Web\\Capabilities';
+const MAIL_APP_DESC = 'A desktop app for your Gmail';
+
+// Started with `npm start`, Windows has to run Electron with the app folder, as for the login item.
+const mailtoArgs = () => (app.isPackaged ? [] : [app.getAppPath()]);
+
+function mailAppRegFile() {
+  const str = (s) => `"${s.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+  const icon = `${app.isPackaged ? process.execPath : path.join(__dirname, 'icon.ico')},0`;
+  const command = [process.execPath, ...mailtoArgs(), '%1'].map((p) => `"${p}"`).join(' ');
+  const key = (name, values) => [`[HKEY_CURRENT_USER\\${name}]`, ...Object.entries(values).map(([k, v]) => `${k === '@' ? '@' : str(k)}=${str(v)}`), ''];
+  return [
+    'Windows Registry Editor Version 5.00',
+    '',
+    ...key(`Software\\Classes\\${MAIL_PROG_ID}`, { '@': 'MailDock Web email link', 'URL Protocol': '' }),
+    ...key(`Software\\Classes\\${MAIL_PROG_ID}\\Application`, { ApplicationName: MAIL_APP_NAME, ApplicationDescription: MAIL_APP_DESC, ApplicationIcon: icon }),
+    ...key(`Software\\Classes\\${MAIL_PROG_ID}\\DefaultIcon`, { '@': icon }),
+    ...key(`Software\\Classes\\${MAIL_PROG_ID}\\shell\\open\\command`, { '@': command }),
+    ...key(MAIL_CAPABILITIES, { ApplicationName: MAIL_APP_NAME, ApplicationDescription: MAIL_APP_DESC, ApplicationIcon: icon }),
+    ...key(`${MAIL_CAPABILITIES}\\URLAssociations`, { mailto: MAIL_PROG_ID }),
+    ...key('Software\\RegisteredApplications', { [MAIL_APP_NAME]: MAIL_CAPABILITIES }),
+  ].join('\r\n');
+}
+
+// One `reg import` instead of a process per value. UTF-16 with a BOM, so any folder name survives.
+function registerMailApp() {
+  const file = path.join(app.getPath('temp'), `maildock-web-${process.pid}.reg`);
+  fs.writeFileSync(file, Buffer.from(`﻿${mailAppRegFile()}`, 'utf16le'));
+  return new Promise((resolve, reject) => {
+    execFile('reg.exe', ['import', file], { windowsHide: true }, (err) => {
+      fs.rm(file, { force: true }, () => {});
+      if (err) reject(err);
+      else resolve();
+    });
+  });
+}
+
+async function openDefaultMailSettings() {
+  if (process.platform !== 'win32') return;
+  try {
+    await registerMailApp();
+    log('Registered as an email app for this user; opening Default apps.');
+  } catch (err) {
+    log(`Could not register as an email app: ${err?.message || err}`);
+    dialog.showErrorBox('MailDock Web could not register as an email app', 'Windows Settings will open, but MailDock Web may be missing from its list. Try the button again; if it still fails, export the logs from Settings > Logs.');
+  }
+  // The page for one app needs Windows 11 with the April 2023 update or later; older versions get the general page.
+  shell.openExternal(`ms-settings:defaultapps?registeredAppUser=${encodeURIComponent(MAIL_APP_NAME)}`).catch(() => shell.openExternal('ms-settings:defaultapps').catch(() => {}));
+}
+
 // ---------------------------------------------------------------- window, tray, menu
 function showWindow() {
   if (!win) return createWindow();
@@ -1324,6 +1382,7 @@ ipcMain.on('settings:action', (e, action) => {
   else if (action === 'reloadCss') applyCssAll();
   else if (action === 'exportLogs') exportLogs();
   else if (action === 'testNotification') testNotification();
+  else if (action === 'defaultMailClient') openDefaultMailSettings();
 });
 ipcMain.on('inbox:open', (e, id, messageId) => fromShell(e) && openMessage(id, String(messageId)));
 ipcMain.on('inbox:action', (e, id, messageId, action) => fromShell(e) && mailAction(id, String(messageId), action));
@@ -1368,7 +1427,8 @@ app.on('before-quit', () => {
 });
 
 app.whenReady().then(() => {
-  app.setAsDefaultProtocolClient('mailto');
+  // Without the app folder, a from-source run registered bare Electron, which cannot open the link.
+  app.setAsDefaultProtocolClient('mailto', process.execPath, mailtoArgs());
   registerWindowsIdentity();
   loadAccounts();
   saveAccounts();
