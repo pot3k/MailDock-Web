@@ -575,7 +575,10 @@ const MAIL_ACTIONS = [
 function showNotification(options, onClick, onAction) {
   if (!Notification.isSupported()) return;
   try {
-    const n = new Notification({ icon: appIcon(64), ...options });
+    const sound = notifySound();
+    // Any choice but the system's own sound silences the system one; ours plays when the notification shows.
+    const n = new Notification({ icon: appIcon(64), ...options, silent: sound !== 'default' });
+    n.once('show', () => playSound(sound));
     liveNotifications.add(n);
     const done = () => liveNotifications.delete(n);
     n.on('close', done);
@@ -780,7 +783,9 @@ function snapshot() {
       notifications: settings.notifications,
       notifyMode: settings.notifyMode,
       notifyTimes: notifyTimes(),
+      notifySound: notifySound(),
     },
+    sounds: SOUNDS,
     about: aboutInfo(),
     inbox: inboxEntries(),
     total: badgeCount(totalUnread()),
@@ -805,6 +810,7 @@ const settings = {
   notifyMode: 'all', // all | important
   // Days are 0 (Sunday) to 6 (Saturday), as Date.getDay() numbers them.
   notifyTimes: { enabled: false, from: '08:00', to: '18:00', days: [1, 2, 3, 4, 5] },
+  notifySound: 'default', // default (the system's own) | none | sound-1 … sound-10 (see SOUNDS)
   blocker: true,
   composeInNewWindow: false,
   deviceId: '', // random, made on first run (see ensureDeviceId)
@@ -1062,6 +1068,34 @@ function testNotification() {
   showNotification({ title: 'Test notification', body: 'Notifications from MailDock Web are working.' }, showWindow);
 }
 
+// ---------------------------------------------------------------- notification sound
+// A notification can only carry one of the system's own sounds, not a file from the app. So with
+// one of ours chosen, the notification is shown silent and the sidebar page plays the file. That
+// page lives as long as the app does (closing the window only hides it), so it can always play.
+const SOUNDS = Array.from({ length: 10 }, (_, i) => ({ id: `sound-${i + 1}`, name: `Sound ${i + 1}`, file: `Sound_${i + 1}.wav` }));
+const SOUND_CHOICES = ['default', 'none', ...SOUNDS.map((s) => s.id)];
+const SOUND_GAP_MS = 1500;
+let lastSoundAt = 0;
+
+const notifySound = () => (SOUND_CHOICES.includes(settings.notifySound) ? settings.notifySound : 'default');
+
+function playSound(choice) {
+  const sound = SOUNDS.find((s) => s.id === choice);
+  if (!sound || !win || win.isDestroyed()) return;
+  // Up to three notifications arrive together for one account; a single sound is enough.
+  const now = Date.now();
+  if (now - lastSoundAt < SOUND_GAP_MS) return;
+  lastSoundAt = now;
+  win.webContents.send('sound:play', sound.file);
+}
+
+function setNotifySound(choice) {
+  if (!SOUND_CHOICES.includes(choice)) return;
+  settings.notifySound = choice;
+  saveSettings();
+  pushState();
+}
+
 // ---------------------------------------------------------------- window, tray, menu
 function showWindow() {
   if (!win) return createWindow();
@@ -1083,6 +1117,9 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       sandbox: true,
+      // This page plays the notification sound, often while the window is hidden in the tray and
+      // nobody has clicked it. This is Electron's default; it is stated so the sound never depends on it.
+      autoplayPolicy: 'no-user-gesture-required',
     },
   });
   // Without this the taskbar button shows Electron's own icon when the app is run with `npm start`.
@@ -1279,6 +1316,7 @@ ipcMain.on('settings:set', (e, key, value) => {
   else if (key === 'notifications') setSetting('notifications', value);
   else if (key === 'notifyMode') setNotifyMode(value);
   else if (key === 'notifyTimes') setNotifyTimes(value);
+  else if (key === 'notifySound') setNotifySound(value);
 });
 ipcMain.on('settings:action', (e, action) => {
   if (!fromShell(e)) return;

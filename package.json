@@ -23,6 +23,7 @@
       "preload.js",
       "gmail-preload.js",
       "shell.html",
+      "sounds/*.wav",
       "icon.png",
       "package.json"
     ],

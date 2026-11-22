@@ -113,6 +113,14 @@
     .switch[aria-checked='true'] { background: var(--accent); }
     .switch[aria-checked='true']::after { transform: translateX(18px); }
     .switch:focus-visible, .setting .action:focus-visible, #settings nav button:focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
+    .setting.sound { gap: 12px; padding: 0; }
+    .setting.sound .pick { flex: 1; min-width: 0; display: flex; align-items: center; gap: 14px; padding: 12px 0; border: 0; background: none; color: var(--text); font: inherit; text-align: left; cursor: pointer; }
+    .setting.sound .pick .name, .setting.sound .pick .desc { display: block; }
+    .setting.sound .dot { flex: none; width: 18px; height: 18px; box-sizing: border-box; border: 2px solid var(--muted); border-radius: 50%; }
+    .setting.sound .pick:hover .dot { border-color: var(--accent); }
+    .setting.sound .pick[aria-pressed='true'] .dot { border: 6px solid var(--accent); }
+    .setting.sound .pick[aria-pressed='true'] .name { color: var(--accent); }
+    .setting.sound .pick:focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
   </style>
 </head>
 <body>
@@ -286,6 +294,7 @@
           },
         ],
       },
+      { id: 'sound', title: 'Sound', custom: renderSoundSettings },
       {
         id: 'appearance',
         title: 'Appearance',
@@ -467,6 +476,64 @@
       pane.appendChild(days);
     }
 
+    // Sound section: the system's own sound, no sound, or one of the app's sounds. Choosing a sound
+    // plays it once; Play only listens, so sounds can be compared without changing the choice.
+    const SYSTEM_SOUND = /^Win/.test(navigator.platform) ? 'Windows Default' : 'System Default';
+
+    function renderSoundSettings(state, pane) {
+      const current = state.settings.notifySound;
+      const intro = el('div', 'setting');
+      const text = el('div', 'text');
+      text.appendChild(el('div', 'name', 'Notification Sound'));
+      text.appendChild(el('div', 'desc', 'Played when MailDock Web shows a notification. Click a sound to use it, or Play to listen first.'));
+      intro.appendChild(text);
+      pane.appendChild(intro);
+
+      const list = el('div', 'sounds');
+      list.setAttribute('role', 'group');
+      list.setAttribute('aria-label', 'Notification Sound');
+      const choices = [
+        { id: 'default', name: SYSTEM_SOUND, desc: 'The notification sound set in your system settings.' },
+        { id: 'none', name: 'No Sound', desc: 'Notifications appear without a sound.' },
+        ...state.sounds,
+      ];
+      for (const c of choices) {
+        const row = el('div', 'setting sound');
+        const pick = el('button', 'pick');
+        pick.setAttribute('aria-pressed', String(current === c.id));
+        pick.dataset.focusKey = `sound:${c.id}`;
+        pick.appendChild(el('span', 'dot'));
+        const label = el('span', 'text');
+        label.appendChild(el('span', 'name', c.name));
+        if (c.desc) label.appendChild(el('span', 'desc', c.desc));
+        pick.appendChild(label);
+        pick.onclick = () => {
+          if (c.file) playSound(c.file);
+          if (current !== c.id) window.mailbox.setSetting('notifySound', c.id);
+        };
+        row.appendChild(pick);
+        if (c.file) {
+          const play = el('button', 'action', 'Play');
+          play.setAttribute('aria-label', `Play ${c.name}`);
+          play.dataset.focusKey = `sound:play:${c.id}`;
+          play.onclick = () => playSound(c.file);
+          row.appendChild(play);
+        }
+        list.appendChild(row);
+      }
+      pane.appendChild(list);
+    }
+
+    // Notification sounds (sent by main when a notification shows) and previews. One at a time:
+    // a new sound stops the one before. Only files main listed in the state are played.
+    let audio = null;
+    function playSound(file) {
+      if (!lastState?.sounds?.some((s) => s.file === file)) return;
+      audio?.pause();
+      audio = new Audio(`sounds/${encodeURIComponent(file)}`);
+      audio.play().catch(() => {});
+    }
+
     // Accounts section: every account with Edit (rename) and Remove, then Add Account.
     // `editing` survives redraws, which happen whenever an unread count changes.
     let editing = null; // { id, value }
@@ -620,6 +687,7 @@
 
     window.mailbox.getState().then(handle);
     window.mailbox.onState(handle);
+    window.mailbox.onPlaySound(playSound);
   </script>
 </body>
 </html>
