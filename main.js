@@ -767,8 +767,11 @@ function showContextMenu(wc, params) {
 // ---------------------------------------------------------------- badges + state
 const totalUnread = () => [...unread.values()].reduce((a, b) => a + b, 0);
 
-// With "Show Unread Badges" off, the sidebar, taskbar and dock all get zero and so draw nothing.
-const badgeCount = (count) => (settings.unreadBadges ? count : 0);
+// Each badge has its own switch: Show Unread Badges for the account buttons in the sidebar, and
+// Show Unread Badge on Taskbar Icon for the taskbar (the dock or launcher elsewhere). A badge that
+// is off gets zero and so draws nothing.
+const accountBadge = (count) => (settings.unreadBadges ? count : 0);
+const taskbarBadge = () => (settings.taskbarBadge ? totalUnread() : 0);
 
 function snapshot() {
   return {
@@ -781,6 +784,7 @@ function snapshot() {
       theme: settings.theme,
       trayIcon: settings.trayIcon,
       unreadBadges: settings.unreadBadges,
+      taskbarBadge: settings.taskbarBadge,
       notifications: settings.notifications,
       notifyMode: settings.notifyMode,
       notifyTimes: notifyTimes(),
@@ -789,13 +793,13 @@ function snapshot() {
     sounds: SOUNDS,
     about: aboutInfo(),
     inbox: inboxEntries(),
-    total: badgeCount(totalUnread()),
-    accounts: accounts.map((a) => ({ id: a.id, name: a.name, unread: badgeCount(unread.get(a.id) || 0) })),
+    total: taskbarBadge(),
+    accounts: accounts.map((a) => ({ id: a.id, name: a.name, unread: accountBadge(unread.get(a.id) || 0) })),
   };
 }
 
 function pushState() {
-  const total = badgeCount(totalUnread());
+  const total = taskbarBadge();
   if (process.platform === 'darwin' || process.platform === 'linux') app.setBadgeCount(total);
   if (process.platform === 'darwin') app.dock?.setBadge(total ? String(total) : '');
   tray?.setToolTip(total ? `MailDock Web: ${total} unread` : 'MailDock Web');
@@ -817,12 +821,16 @@ const settings = {
   deviceId: '', // random, made on first run (see ensureDeviceId)
   theme: 'system', // system | dark | light
   trayIcon: true,
-  unreadBadges: true,
+  unreadBadges: true, // the account buttons in the sidebar
+  taskbarBadge: true, // the total on the taskbar icon (the dock or launcher elsewhere)
   menuBar: true, // shown until the user presses Alt, which toggles it
 };
 function loadSettings() {
   try {
-    Object.assign(settings, JSON.parse(fs.readFileSync(settingsPath(), 'utf8')));
+    const saved = JSON.parse(fs.readFileSync(settingsPath(), 'utf8'));
+    Object.assign(settings, saved);
+    // The taskbar badge used to follow Show Unread Badges, so someone who had turned that off keeps it off.
+    if (!('taskbarBadge' in saved)) settings.taskbarBadge = settings.unreadBadges;
     // Left over from the removed sign-in compatibility options.
     delete settings.identity;
     delete settings.browserIdentity;
@@ -1371,6 +1379,7 @@ ipcMain.on('settings:set', (e, key, value) => {
   else if (key === 'theme') setTheme(value);
   else if (key === 'trayIcon') setTrayIcon(value);
   else if (key === 'unreadBadges') setUnreadBadges(value);
+  else if (key === 'taskbarBadge') setSetting('taskbarBadge', value);
   else if (key === 'notifications') setSetting('notifications', value);
   else if (key === 'notifyMode') setNotifyMode(value);
   else if (key === 'notifyTimes') setNotifyTimes(value);

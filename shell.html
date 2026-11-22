@@ -270,6 +270,7 @@
         items: [
           { name: 'Launch at Login', desc: 'Start MailDock Web when you sign in to this computer.', key: 'launchAtLogin' },
           { name: 'Minimize to System Tray', desc: 'Minimizing hides the window in the system tray instead of leaving it on the taskbar. Needs the system tray icon.', key: 'minimizeToTray' },
+          { name: 'Show Unread Badge on Taskbar Icon', desc: 'Show the number of unread emails, across all accounts, on the MailDock Web icon in the taskbar.', key: 'taskbarBadge' },
           {
             name: 'Default Mail Client',
             desc: 'Make MailDock Web the app that opens email links. Windows only lets you change this yourself: in the Settings page that opens, click MAILTO and choose MailDock Web.',
@@ -294,6 +295,7 @@
             disabled: (s) => !s.settings.notifications,
           },
           { render: renderNotifyTimes },
+          { render: renderSoundSettings },
           {
             name: 'Test Notification',
             desc: 'Show a sample notification now, whatever the settings above say. If none appears, check Windows notification settings and Do Not Disturb.',
@@ -302,7 +304,6 @@
           },
         ],
       },
-      { id: 'sound', title: 'Sound', custom: renderSoundSettings },
       {
         id: 'appearance',
         title: 'Appearance',
@@ -314,7 +315,7 @@
             options: [['system', 'System'], ['dark', 'Dark'], ['light', 'Light']],
           },
           { name: 'Enable System Tray Icon', desc: 'Show MailDock Web in the system tray. When off, closing the window minimizes it to the taskbar instead.', key: 'trayIcon' },
-          { name: 'Show Unread Badges', desc: 'Show unread counts on the account buttons and on the taskbar icon.', key: 'unreadBadges' },
+          { name: 'Show Unread Badges', desc: 'Show unread counts on the account buttons in the sidebar. The taskbar icon has its own switch under General.', key: 'unreadBadges' },
           { name: 'Edit Custom CSS', desc: 'Open custom.css in your editor. It is applied to Gmail in every account, and saving it applies the changes.', button: 'Open', run: () => window.mailbox.settingsAction('editCss') },
           { name: 'Reload Custom CSS', desc: 'Apply custom.css again now.', button: 'Reload', run: () => window.mailbox.settingsAction('reloadCss') },
         ],
@@ -485,12 +486,13 @@
       pane.appendChild(days);
     }
 
-    // Sound section: the system's own sound, no sound, or one of the app's sounds. Choosing a sound
-    // plays it once; Play only listens, so sounds can be compared without changing the choice.
+    // Notifications > Sound: the system's own sound, no sound, or one of the app's sounds. Choosing a
+    // sound plays it once; Play only listens, so sounds can be compared without changing the choice.
     const SYSTEM_SOUND = IS_WINDOWS ? 'Windows Default' : 'System Default';
 
     function renderSoundSettings(state, pane) {
       const current = state.settings.notifySound;
+      pane.appendChild(el('h3', 'subhead', 'Sound'));
       const intro = el('div', 'setting');
       const text = el('div', 'text');
       text.appendChild(el('div', 'name', 'Notification Sound'));
