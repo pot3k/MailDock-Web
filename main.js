@@ -218,9 +218,33 @@ function isGoogleHost(url) {
   }
 }
 
+// Gmail sends a click on a link in an email through Google's redirect page
+// (https://www.google.com/url?q=<the link>&source=gmail…), and Calendar and Docs do the same. That
+// page is on a Google host, so judged by its address every such link would open in an in-app
+// window; the link's real destination has to decide instead. Returns that destination, or null.
+function googleRedirectTarget(url) {
+  try {
+    const { hostname, pathname, searchParams } = new URL(url);
+    if ((hostname !== 'www.google.com' && hostname !== 'google.com') || pathname !== '/url') return null;
+    const target = searchParams.get('q') || searchParams.get('url') || '';
+    return /^https?:/i.test(target) ? target : null;
+  } catch {
+    return null;
+  }
+}
+
+// Where a link really goes.
+const linkTarget = (url) => googleRedirectTarget(url) || url;
+
+// The link itself is opened, not Google's redirect page: the browser gets there directly, and an old
+// Gmail page cannot land it on Google's "Redirect Notice" page. Links are not logged (privacy).
+function openInBrowser(url) {
+  shell.openExternal(url).catch(() => log('Could not open a link in the default browser.'));
+}
+
 // Links and window.open: other Google apps (Calendar, Drive, Meet…) open as in-app windows that
-// share the opener's session, so they are already signed in to the same account. Everything else
-// goes to the default browser.
+// share the opener's session, so they are already signed in to the same account. Everything else,
+// including a link in an email to any site outside Google, goes to the default browser.
 function handleWindowOpen(wc, { url }) {
   if (url.startsWith('mailto:')) {
     openMailto(url);
@@ -232,21 +256,26 @@ function handleWindowOpen(wc, { url }) {
     wc.loadURL(url).catch(() => {});
     return { action: 'deny' };
   }
-  if (isGoogleHost(url) || url === 'about:blank') {
+  const target = linkTarget(url);
+  if (isGoogleHost(target) || url === 'about:blank') {
     return { action: 'allow', overrideBrowserWindowOptions: { autoHideMenuBar: true, icon: process.platform === 'darwin' ? undefined : appIcon(256) } };
   }
-  if (/^https?:/i.test(url)) shell.openExternal(url);
+  if (/^https?:/i.test(target)) openInBrowser(target);
   return { action: 'deny' };
 }
 
-function guardContents(wc) {
+// popup: the in-app window wc belongs to, when it is one.
+function guardContents(wc, popup = null) {
   wc.setWindowOpenHandler((details) => handleWindowOpen(wc, details));
-  wc.on('did-create-window', (child) => guardContents(child.webContents));
+  wc.on('did-create-window', (child) => guardContents(child.webContents, child));
   wc.on('will-navigate', (event, url) => {
-    if (!isGoogleHost(url)) {
-      event.preventDefault();
-      if (/^https?:/i.test(url)) shell.openExternal(url);
-    }
+    const target = linkTarget(url);
+    if (isGoogleHost(target)) return;
+    event.preventDefault();
+    if (/^https?:/i.test(target)) openInBrowser(target);
+    // A page can open a blank window and only then send it to the link. Once the link has gone to
+    // the browser, that window has nothing to show, so it should not be left behind empty.
+    if (popup && ['', 'about:blank'].includes(wc.getURL())) setImmediate(() => !popup.isDestroyed() && popup.close());
   });
 }
 
@@ -755,7 +784,8 @@ function contextMenuTemplate(wc, params) {
       { label: 'Select All', click: () => wc.selectAll() },
     ];
   }
-  const link = /^(https?|mailto):/i.test(params.linkURL || '') ? params.linkURL : '';
+  // A link in an email may already point at Google's redirect page; copy where it really goes.
+  const link = /^(https?|mailto):/i.test(params.linkURL || '') ? linkTarget(params.linkURL) : '';
   return [
     { label: 'Select All', click: () => wc.selectAll() },
     // Greyed out unless the click was on a link.

@@ -49,7 +49,7 @@ The app runs Gmail as plain Electron: it does not change its user agent or prete
 - Launch at login (File menu).
 - Custom CSS: View > Edit Custom CSS… opens `custom.css`; saving applies it to Gmail live.
 - `mailto:` links open a Gmail compose window once MailDock Web is your default email app. On Windows, Settings > General > Default Mail Client registers MailDock Web as an email app for your Windows user (no admin rights needed) and opens Windows Settings > Default apps at MailDock Web's page; click MAILTO there and choose MailDock Web. Windows only lets you make that choice yourself. On other systems, choose the default email app in the system settings.
-- Links to non-Google sites open in your default browser.
+- Links to non-Google sites open in your default browser, including links in emails. Gmail sends a click on a link in an email through Google's redirect page; the app opens the link's own address in the browser instead, and Copy Link Address in the right-click menu copies that address. Links in emails to Google's own apps, such as a shared Google Doc, open in an in-app window signed in to the same account.
 - Right-click menu in Gmail: on text or a link, Select All and Copy Link Address (greyed out when not on a link); with text selected, Search with Google (opens your default browser), Copy and Select All; in a typing area such as Compose, Cut, Copy, Paste and Select All. Gmail's own right-click menus, for example on an inbox row, still appear where Gmail provides them.
 - Auto-update via `electron-updater` in installed builds: on start, the app checks the GitHub releases of `pot3k/MailDock-Web` for a newer version. To publish one, raise `version` in `package.json`, set `GH_TOKEN` to a GitHub token, and run `npm run release`.
 
@@ -71,7 +71,7 @@ How the pieces fit together:
 4. **Unread badge.** The number is read from the Gmail page itself, next to the Inbox link, each time the page changes. Before the page has reported one, the count in the window title is used.
 5. **Acting on a message.** Archive, Mark as Read, Delete and Spam are carried out inside the Gmail page, by sending the same request Gmail's own buttons send. `main.js` asks, the page does it and reports back, and the feed is checked again.
 6. **Compose in New Window.** This optional tweak is switched on by a start-up argument passed to `gmail-preload.js`, so changing it reloads Gmail. It takes over the Compose button and opens Gmail's full-window compose page.
-7. **Links and other Google apps.** Links to Google pages open in a new window inside the app, on the same account. Sign-in pages open in the account's own view. Everything else goes to your default browser.
+7. **Links and other Google apps.** Links to Google pages open in a new window inside the app, on the same account. Sign-in pages open in the account's own view. Everything else goes to your default browser. Gmail hands over a link in an email wrapped in Google's redirect page (`www.google.com/url?q=…`), so the app goes by the address inside it, not by the redirect page's own Google address.
 8. **Blocker.** Once an account is signed in, requests to a short list of advertising and tracking hosts are cancelled.
 
 Points 3 to 6 rely on parts of Gmail that Google does not document and can change without notice. If the unread count, a notification button or Compose in New Window stops working, that is the likely cause; the rest of the app is unaffected.
