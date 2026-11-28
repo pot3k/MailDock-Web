@@ -91,7 +91,6 @@ const feeds = new Map(); // id -> { entries, seen, failures, timer }
 const pendingActions = new Map(); // requestId -> { resolve, timer, wc }
 const liveNotifications = new Set(); // keeps notifications referenced so their click handlers survive
 let activeId = null;
-let inboxOpen = false; // the unified inbox is showing instead of a Gmail view
 let settingsOpen = false; // the settings page is showing instead of a Gmail view
 
 // ---------------------------------------------------------------- single instance + mailto
@@ -424,14 +423,13 @@ function rebuildViews() {
   domUnread.clear();
   signedIn.clear();
   for (const account of accounts) createView(account);
-  if (!inboxOpen && !settingsOpen) attachActive();
+  if (!settingsOpen) attachActive();
 }
 
 function selectAccount(id) {
   if (!accounts.some((a) => a.id === id)) return;
   detachActive();
   activeId = id;
-  inboxOpen = false;
   settingsOpen = false;
   if (!views.has(id)) createView(accounts.find((a) => a.id === id));
   attachActive();
@@ -534,7 +532,7 @@ function parseFeed(xml) {
 
 function startFeed(id) {
   if (feeds.has(id)) return;
-  feeds.set(id, { entries: [], seen: null, failures: 0, timer: null });
+  feeds.set(id, { seen: null, failures: 0, timer: null });
   schedulePoll(id, 5000);
 }
 
@@ -570,7 +568,6 @@ async function pollFeed(id) {
     const fresh = feed.seen ? entries.filter((e) => !feed.seen.has(e.key)) : [];
     feed.seen = feed.seen || new Set();
     for (const e of entries) feed.seen.add(e.key);
-    feed.entries = entries;
     if (fresh.length && settings.notifications) {
       if (withinNotifyTimes(new Date())) notifyNewMail(id, await notifiable(id, view, fresh));
       else log(`Outside notification times: no notification for ${fresh.length} new message(s).`);
@@ -687,34 +684,15 @@ async function mailAction(id, messageId, action) {
     showNotification({ title: `Could not ${spec.failed} the message`, body: `${result.error} Open the account in MailDock Web and do it in Gmail.` }, showWindow);
     return;
   }
-  const feed = feeds.get(id);
-  if (feed) feed.entries = feed.entries.filter((e) => e.messageId !== messageId);
-  pushState();
   schedulePoll(id, 1500);
 }
 
-// ---------------------------------------------------------------- unified inbox
-function toggleInbox(open = !inboxOpen) {
-  if (!win || win.isDestroyed() || open === inboxOpen) return;
-  inboxOpen = open;
-  if (inboxOpen) {
-    settingsOpen = false;
-    detachActive();
-    win.webContents.focus();
-    for (const account of accounts) schedulePoll(account.id, 0);
-  } else {
-    attachActive();
-  }
-  pushState();
-}
-
 // ---------------------------------------------------------------- settings page
-// Shown by the sidebar page in the space a Gmail view normally covers, like the unified inbox.
+// Shown by the sidebar page in the space a Gmail view normally covers.
 function toggleSettings(open = !settingsOpen) {
   if (!win || win.isDestroyed() || open === settingsOpen) return;
   settingsOpen = open;
   if (settingsOpen) {
-    inboxOpen = false;
     detachActive();
     win.webContents.focus();
   } else {
@@ -740,16 +718,6 @@ function setLaunchAtLogin(on) {
 function editCustomCss() {
   ensureCssFile();
   shell.openPath(cssPath());
-}
-
-function inboxEntries() {
-  const all = [];
-  for (const account of accounts) {
-    for (const e of feeds.get(account.id)?.entries || []) {
-      all.push({ accountId: account.id, account: account.name, messageId: e.messageId, from: e.from, subject: e.subject, summary: e.summary, receivedAt: e.receivedAt });
-    }
-  }
-  return all.sort((a, b) => b.receivedAt - a.receivedAt);
 }
 
 // ---------------------------------------------------------------- right-click menu
@@ -810,7 +778,6 @@ const taskbarBadge = () => (settings.taskbarBadge ? totalUnread() : 0);
 function snapshot() {
   return {
     activeId,
-    inboxOpen,
     settingsOpen,
     settings: {
       launchAtLogin: getLaunchAtLogin(),
@@ -827,7 +794,6 @@ function snapshot() {
     sounds: SOUNDS,
     about: aboutInfo(),
     update,
-    inbox: inboxEntries(),
     total: taskbarBadge(),
     accounts: accounts.map((a) => ({ id: a.id, name: a.name, unread: accountBadge(unread.get(a.id) || 0) })),
   };
@@ -1342,8 +1308,6 @@ function buildMenu() {
     {
       label: 'Accounts',
       submenu: [
-        { label: 'All Inboxes', accelerator: 'CmdOrCtrl+Shift+A', click: () => toggleInbox() },
-        { type: 'separator' },
         { label: 'Next Account', accelerator: 'Ctrl+Tab', click: () => cycleAccount(1) },
         { label: 'Previous Account', accelerator: 'Ctrl+Shift+Tab', click: () => cycleAccount(-1) },
         { type: 'separator' },
@@ -1469,17 +1433,13 @@ ipcMain.on('account:remove', (_e, id) => {
   accounts = accounts.filter((a) => a.id !== id);
   saveAccounts();
   if (activeId === id) {
-    // Keep the unified inbox showing if that is where the account was removed from.
-    const keepInbox = inboxOpen;
     const keepSettings = settingsOpen; // removing from Settings > Accounts should stay on that page
     selectAccount(accounts[0].id);
-    if (keepInbox) toggleInbox(true);
-    else if (keepSettings) toggleSettings(true);
+    if (keepSettings) toggleSettings(true);
   } else pushState();
 });
-// Unified inbox (sidebar page only: these change mail, so ignore any other sender)
+// Sidebar page only: these change mail, so ignore any other sender
 const fromShell = (e) => win && !win.isDestroyed() && e.sender === win.webContents;
-ipcMain.on('inbox:toggle', (e) => fromShell(e) && toggleInbox());
 ipcMain.on('settings:toggle', (e) => fromShell(e) && toggleSettings());
 // Sidebar app launcher: the page sends a name, never a URL, so it can only open what the menu can.
 ipcMain.on('apps:open', (e, name) => {
@@ -1510,8 +1470,6 @@ ipcMain.on('settings:action', (e, action) => {
   else if (action === 'checkUpdates') checkForUpdates(true);
   else if (action === 'installUpdate') installUpdate();
 });
-ipcMain.on('inbox:open', (e, id, messageId) => fromShell(e) && openMessage(id, String(messageId)));
-ipcMain.on('inbox:action', (e, id, messageId, action) => fromShell(e) && mailAction(id, String(messageId), action));
 // From the Gmail views' preload
 ipcMain.on('gmail:unread', (e, count) => {
   const id = [...views].find(([, view]) => view.webContents === e.sender)?.[0];
