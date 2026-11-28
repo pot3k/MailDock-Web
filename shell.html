@@ -325,6 +325,7 @@
         title: 'About',
         items: [
           { name: 'Application Version', desc: 'The version of MailDock Web you are running.', value: (s) => s.about.version },
+          { render: renderUpdateSettings },
           { name: 'Operating System', desc: 'The system this computer is running.', value: (s) => s.about.os },
           { name: 'Device ID', desc: 'A random ID made for this installation. It is stored only on this computer and appears in exported logs.', value: (s) => s.about.deviceId },
         ],
@@ -535,6 +536,34 @@
       pane.appendChild(list);
     }
 
+    // Updates: what the last check found, and the one thing to do next.
+    function renderUpdateSettings(state, pane) {
+      const u = state.update;
+      const AUTO = 'MailDock Web also checks when it starts and every 6 hours, downloads a new version in the background and installs it when you quit.';
+      const [desc, button, run, primary] = {
+        source: ['This copy runs from its source folder, so it does not update itself. Installed copies get new versions from GitHub.', 'Check for Updates', null],
+        idle: [`New versions come from MailDock Web's releases on GitHub. ${AUTO}`, 'Check for Updates', 'checkUpdates'],
+        checking: ['Checking GitHub for a new version…', 'Checking…', null],
+        latest: [`You have the newest version. ${AUTO}`, 'Check for Updates', 'checkUpdates'],
+        downloading: [`Downloading version ${u.version}… ${u.percent}%`, 'Downloading…', null],
+        ready: [`Version ${u.version} is downloaded. It installs the next time you quit MailDock Web, or restart now to update.`, 'Restart to Update', 'installUpdate', true],
+        error: [u.error, 'Try Again', 'checkUpdates'],
+      }[u.status] || ['', 'Check for Updates', 'checkUpdates'];
+      const row = el('div', 'setting');
+      const text = el('div', 'text');
+      text.appendChild(el('div', 'name', 'Updates'));
+      const status = el('div', 'desc', desc);
+      status.setAttribute('aria-live', 'polite');
+      text.appendChild(status);
+      row.appendChild(text);
+      const b = el('button', primary ? 'action primary' : 'action', button);
+      b.disabled = !run;
+      b.dataset.focusKey = 'item:updates';
+      if (run) b.onclick = () => window.mailbox.settingsAction(run);
+      row.appendChild(b);
+      pane.appendChild(row);
+    }
+
     // Notification sounds (sent by main when a notification shows) and previews. One at a time:
     // a new sound stops the one before. Only files main listed in the state are played.
     let audio = null;
@@ -699,6 +728,12 @@
     window.mailbox.getState().then(handle);
     window.mailbox.onState(handle);
     window.mailbox.onPlaySound(playSound);
+    // File > Check for Updates… and the update notification open Settings at a given section.
+    window.mailbox.onSettingsSection((id) => {
+      if (!SETTINGS.some((s) => s.id === id)) return;
+      settingsSection = id;
+      if (lastState) renderSettings(lastState);
+    });
   </script>
 </body>
 </html>

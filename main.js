@@ -826,6 +826,7 @@ function snapshot() {
     },
     sounds: SOUNDS,
     about: aboutInfo(),
+    update,
     inbox: inboxEntries(),
     total: taskbarBadge(),
     accounts: accounts.map((a) => ({ id: a.id, name: a.name, unread: accountBadge(unread.get(a.id) || 0) })),
@@ -1295,6 +1296,7 @@ function buildMenu() {
         },
         { label: 'Minimize to System Tray', type: 'checkbox', checked: settings.minimizeToTray, click: (item) => setMinimizeToTray(item.checked) },
         { label: 'Settings…', accelerator: 'CmdOrCtrl+,', click: () => toggleSettings(true) },
+        { label: 'Check for Updates…', click: () => showUpdateSettings(true) },
         { type: 'separator' },
         isMac ? { role: 'close' } : { role: 'quit' },
       ],
@@ -1357,16 +1359,92 @@ function buildMenu() {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
+// ---------------------------------------------------------------- updates
+// Installed copies update from the GitHub releases of pot3k/MailDock-Web (build.publish in
+// package.json): electron-updater reads latest.yml from the newest release, downloads the installer
+// in the background and checks it against the sha512 listed there. A downloaded update installs when
+// the app quits, or at once with Restart to Update. A run from source has no installer to replace,
+// so it never checks.
+const UPDATE_CHECK_MS = 6 * 60 * 60 * 1000; // the app often stays in the tray for days
+let updater = null;
+// status: source (run from source) | idle | checking | latest | downloading | ready | error
+let update = { status: app.isPackaged ? 'idle' : 'source', version: '', percent: 0, error: '' };
+let manualCheck = false; // a check the user asked for reports "up to date"; a scheduled one stays quiet
+
+function setUpdate(change) {
+  update = { ...update, ...change };
+  pushState();
+}
+
 function setupAutoUpdate() {
   if (!app.isPackaged) return;
   try {
-    // Fails until the GitHub repo has a published release (and while offline); that is not an error worth showing.
-    require('electron-updater')
-      .autoUpdater.checkForUpdatesAndNotify()
-      .catch((err) => log(`Update check failed: ${String(err?.message || err).split('\n')[0]}`));
+    updater = require('electron-updater').autoUpdater;
+    updater.disableWebInstaller = true; // releases carry the full installer, never a web installer
   } catch (err) {
     log(`Auto-update unavailable: ${err.message}`);
+    return;
   }
+  updater.on('checking-for-update', () => setUpdate({ status: 'checking', error: '' }));
+  updater.on('update-not-available', () => {
+    if (manualCheck) log(`Checked for updates: ${app.getVersion()} is the newest version.`);
+    manualCheck = false;
+    setUpdate({ status: 'latest' });
+  });
+  updater.on('update-available', (info) => {
+    log(`Update ${info.version} found; downloading.`);
+    manualCheck = false;
+    setUpdate({ status: 'downloading', version: info.version, percent: 0 });
+  });
+  // Progress arrives many times a second; the page only needs to hear about whole percents.
+  updater.on('download-progress', (progress) => {
+    const percent = Math.floor(progress.percent || 0);
+    if (percent !== update.percent) setUpdate({ status: 'downloading', percent });
+  });
+  updater.on('update-downloaded', (info) => {
+    log(`Update ${info.version} downloaded; it installs when the app quits.`);
+    setUpdate({ status: 'ready', version: info.version });
+    showNotification(
+      { title: `MailDock Web ${info.version} is ready`, body: 'It installs the next time you quit the app. Choose Restart Now to update now.', actions: [{ type: 'button', text: 'Restart Now' }] },
+      () => showUpdateSettings(),
+      () => installUpdate()
+    );
+  });
+  // Also fired, after the 'error' event, as a rejected checkForUpdates(); the message is often long
+  // and technical (it can hold GitHub's whole reply), so only its first line is logged.
+  updater.on('error', (err) => {
+    const downloading = update.status === 'downloading';
+    log(`Update ${downloading ? 'download' : 'check'} failed: ${String(err?.message || err).split('\n')[0].slice(0, 200)}`);
+    manualCheck = false;
+    setUpdate({
+      status: 'error',
+      error: downloading ? 'The update could not be downloaded. Check your internet connection, then try again.' : 'MailDock Web could not reach GitHub to check for updates. Check your internet connection, then try again.',
+    });
+  });
+  checkForUpdates();
+  setInterval(checkForUpdates, UPDATE_CHECK_MS);
+}
+
+function checkForUpdates(manual = false) {
+  if (!updater || ['checking', 'downloading', 'ready'].includes(update.status)) return;
+  manualCheck = manual;
+  updater.checkForUpdates().catch(() => {}); // failures arrive as the 'error' event
+}
+
+// Settings > About shows the update state; File > Check for Updates… opens it there.
+function showUpdateSettings(check = false) {
+  showWindow();
+  toggleSettings(true);
+  if (win && !win.isDestroyed()) win.webContents.send('settings:section', 'about');
+  if (check) checkForUpdates(true);
+}
+
+function installUpdate() {
+  if (!updater || update.status !== 'ready') return;
+  log(`Restarting to install update ${update.version}.`);
+  quitting = true;
+  // Silent: the per-user installer needs no questions answered. Then it starts the new version.
+  setImmediate(() => updater.quitAndInstall(true, true));
 }
 
 // ---------------------------------------------------------------- IPC
@@ -1429,6 +1507,8 @@ ipcMain.on('settings:action', (e, action) => {
   else if (action === 'exportLogs') exportLogs();
   else if (action === 'testNotification') testNotification();
   else if (action === 'defaultMailClient') openDefaultMailSettings();
+  else if (action === 'checkUpdates') checkForUpdates(true);
+  else if (action === 'installUpdate') installUpdate();
 });
 ipcMain.on('inbox:open', (e, id, messageId) => fromShell(e) && openMessage(id, String(messageId)));
 ipcMain.on('inbox:action', (e, id, messageId, action) => fromShell(e) && mailAction(id, String(messageId), action));
